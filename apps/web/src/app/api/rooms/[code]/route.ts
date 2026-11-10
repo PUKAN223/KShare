@@ -8,7 +8,7 @@ export async function GET(
 ) {
   try {
     const { code } = await context.params;
-    const room = RoomStore.findByCode(code);
+    let room = await RoomStore.findByCode(code);
 
     if (!room) {
       return NextResponse.json({ error: "ไม่พบห้องนี้ในระบบ" }, { status: 404 });
@@ -16,11 +16,18 @@ export async function GET(
 
     const viewerId = req.nextUrl.searchParams.get("viewerId");
     if (viewerId && room.participants[viewerId] && !room.participants[viewerId].kicked) {
-      room.participants[viewerId].lastSeenAt = Date.now();
+      const upserted = await RoomStore.upsertParticipant(room.code, {
+        viewerId,
+        displayName: room.participants[viewerId].displayName,
+        deviceHint: room.participants[viewerId].deviceHint
+      });
+      if (upserted.room) {
+        room = upserted.room;
+      }
     }
 
     const activeParticipants = Object.values(room.participants).filter(
-      (p) => !p.kicked && Date.now() - p.lastSeenAt < 25000
+      (p) => !p.kicked && Date.now() - p.lastSeenAt < 35000
     );
 
     return NextResponse.json({
@@ -34,7 +41,6 @@ export async function GET(
         participants: activeParticipants,
         settings: {
           ...room.settings,
-          // Mask actual pinCode in public GET, only expose boolean hasPin
           pinCode: undefined,
           hasPin: Boolean(room.settings.pinCode)
         },
@@ -45,7 +51,10 @@ export async function GET(
     });
   } catch (error) {
     console.error("Error fetching room details:", error);
-    return NextResponse.json({ error: "เกิดข้อผิดพลาดในการดึงข้อมูลห้อง" }, { status: 500 });
+    return NextResponse.json(
+      { error: "เกิดข้อผิดพลาดในการดึงข้อมูลห้อง" },
+      { status: 500 }
+    );
   }
 }
 
@@ -59,9 +68,12 @@ export async function POST(
     const body = await req.json().catch(() => ({}));
     const { token, viewerId, displayName, deviceHint, pinCode } = body;
 
-    const access = RoomStore.verifyAccess(code, token);
+    const access = await RoomStore.verifyAccess(code, token);
     if (!access.valid || !access.room) {
-      return NextResponse.json({ error: "ไม่พบห้องเรียนหรือรหัสห้องไม่ถูกต้อง" }, { status: 404 });
+      return NextResponse.json(
+        { error: "ไม่พบห้องนี้หรือรหัสห้องไม่ถูกต้อง" },
+        { status: 404 }
+      );
     }
 
     if (access.role === UserRole.HOST) {
@@ -73,7 +85,10 @@ export async function POST(
     }
 
     // Check PIN if required
-    if (access.room.settings.pinCode && access.room.settings.pinCode !== (pinCode || "")) {
+    if (
+      access.room.settings.pinCode &&
+      access.room.settings.pinCode !== (pinCode || "")
+    ) {
       return NextResponse.json(
         {
           error: "รหัส PIN สำหรับเข้าห้องไม่ถูกต้อง",
@@ -87,7 +102,7 @@ export async function POST(
     const effectiveViewerId =
       viewerId || "v_" + Math.random().toString(36).substring(2, 10);
 
-    const joinRes = RoomStore.upsertParticipant(code, {
+    const joinRes = await RoomStore.upsertParticipant(access.room.code, {
       viewerId: effectiveViewerId,
       displayName,
       deviceHint
@@ -119,7 +134,10 @@ export async function POST(
     });
   } catch (error) {
     console.error("Error joining room:", error);
-    return NextResponse.json({ error: "เกิดข้อผิดพลาดในการเข้าร่วมห้อง" }, { status: 500 });
+    return NextResponse.json(
+      { error: "เกิดข้อผิดพลาดในการเข้าร่วมห้อง" },
+      { status: 500 }
+    );
   }
 }
 
@@ -142,16 +160,19 @@ export async function PATCH(
       kickViewerId
     } = body;
 
-    const access = RoomStore.verifyAccess(code, hostToken);
+    const access = await RoomStore.verifyAccess(code, hostToken);
     if (!access.valid || access.role !== UserRole.HOST) {
-      return NextResponse.json({ error: "ไม่มีสิทธิ์ปรับแต่งสถานะของห้องนี้" }, { status: 403 });
+      return NextResponse.json(
+        { error: "ไม่มีสิทธิ์ปรับแต่งสถานะของห้องนี้" },
+        { status: 403 }
+      );
     }
 
     if (kickViewerId) {
-      RoomStore.kickParticipant(code, kickViewerId);
+      await RoomStore.kickParticipant(code, kickViewerId);
     }
 
-    const updated = RoomStore.updateRoom(code, {
+    const updated = await RoomStore.updateRoom(code, {
       status: status as RoomStatus | undefined,
       streamId,
       name,
@@ -163,7 +184,10 @@ export async function PATCH(
     return NextResponse.json({ success: true, room: updated });
   } catch (error) {
     console.error("Error updating room:", error);
-    return NextResponse.json({ error: "เกิดข้อผิดพลาดในการอัปเดตห้อง" }, { status: 500 });
+    return NextResponse.json(
+      { error: "เกิดข้อผิดพลาดในการอัปเดตห้อง" },
+      { status: 500 }
+    );
   }
 }
 
@@ -175,13 +199,16 @@ export async function DELETE(
   try {
     const { code } = await context.params;
     const token = req.nextUrl.searchParams.get("token") || undefined;
-    const deleted = RoomStore.deleteRoom(code, token);
+    const deleted = await RoomStore.deleteRoom(code, token);
     if (!deleted) {
       return NextResponse.json({ error: "ไม่สามารถลบห้องได้" }, { status: 400 });
     }
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Error deleting room:", error);
-    return NextResponse.json({ error: "เกิดข้อผิดพลาดในการลบห้อง" }, { status: 500 });
+    return NextResponse.json(
+      { error: "เกิดข้อผิดพลาดในการลบห้อง" },
+      { status: 500 }
+    );
   }
 }

@@ -20,19 +20,29 @@ model User {
 }
 
 model Room {
-  id          String           @id @default(uuid())
-  code        String           @unique
-  name        String
-  ownerId     String?
-  status      String           @default("IDLE") // IDLE, ACTIVE, CLOSED
-  createdAt   DateTime         @default(now())
-  expiresAt   DateTime?
-  owner       User?            @relation("RoomOwner", fields: [ownerId], references: [id], onDelete: Cascade)
-  memberships RoomMembership[]
-  sessions    Session[]
+  id                 String           @id @default(uuid())
+  code               String           @unique
+  name               String
+  subject            String           @default("ทั่วไป")
+  ownerId            String?
+  status             String           @default("IDLE") // IDLE, PREPARING, LIVE, ACTIVE, CLOSED
+  hostToken          String           @default("")
+  settingsJson       String           @default("{}") @db.Text
+  participantsJson   String           @default("{}") @db.Text
+  signalsJson        String           @default("{}") @db.Text
+  thumbnailDataUrl   String?          @db.Text
+  currentStreamId    String?
+  activeViewersCount Int              @default(0)
+  createdAt          DateTime         @default(now())
+  lastActiveAt       DateTime         @default(now())
+  expiresAt          DateTime?
+  owner              User?            @relation("RoomOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  memberships        RoomMembership[]
+  sessions           Session[]
 
   @@index([code])
   @@index([ownerId])
+  @@index([lastActiveAt])
 }
 
 model RoomMembership {

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@kshare/database";
+import { getCandidateCodes, normalizeRoomCode } from "@/lib/room-store";
 
 export interface PeerSignalSlot {
   viewerId: string;
@@ -23,29 +25,74 @@ declare global {
 }
 
 const roomSignals = globalThis.__kshareRoomSignals ?? new Map<string, RoomSignalState>();
-if (process.env.NODE_ENV !== "production") {
-  globalThis.__kshareRoomSignals = roomSignals;
-}
+globalThis.__kshareRoomSignals = roomSignals;
 
-function getRoomSignalState(code: string): RoomSignalState {
-  const normalized = code.toUpperCase().replace(/\s+/g, "");
-  let state = roomSignals.get(normalized);
+async function getRoomSignalState(code: string): Promise<{
+  canonicalCode: string;
+  state: RoomSignalState;
+}> {
+  const candidates = getCandidateCodes(code);
+  const canonicalCode = normalizeRoomCode(code);
+
+  let state = roomSignals.get(canonicalCode);
+
+  try {
+    const row = await prisma.room.findFirst({
+      where: { code: { in: candidates } },
+      select: { code: true, signalsJson: true }
+    });
+    if (row && row.signalsJson && row.signalsJson !== "{}") {
+      const dbState = JSON.parse(row.signalsJson) as RoomSignalState;
+      if (dbState && (!state || (dbState.updatedAt || 0) >= (state.updatedAt || 0))) {
+        state = dbState;
+        roomSignals.set(row.code, state);
+      }
+      return { canonicalCode: row.code, state: pruneStaleSlots(state!) };
+    }
+  } catch {
+    // Fallback to memory state
+  }
+
   if (!state) {
     state = {
       hostActive: false,
       slots: {},
       updatedAt: Date.now()
     };
-    roomSignals.set(normalized, state);
+    roomSignals.set(canonicalCode, state);
   }
-  // Clean up stale slots older than 2 minutes
+
+  return { canonicalCode, state: pruneStaleSlots(state) };
+}
+
+function pruneStaleSlots(state: RoomSignalState): RoomSignalState {
   const now = Date.now();
+  if (!state.slots) state.slots = {};
   for (const [vid, slot] of Object.entries(state.slots)) {
     if (now - slot.updatedAt > 120000) {
       delete state.slots[vid];
     }
   }
   return state;
+}
+
+async function saveRoomSignalState(
+  canonicalCode: string,
+  state: RoomSignalState
+): Promise<void> {
+  roomSignals.set(canonicalCode, state);
+  try {
+    const candidates = getCandidateCodes(canonicalCode);
+    await prisma.room.updateMany({
+      where: { code: { in: candidates } },
+      data: {
+        signalsJson: JSON.stringify(state),
+        lastActiveAt: new Date()
+      }
+    });
+  } catch {
+    // Ignore DB signal sync error
+  }
 }
 
 function getOrCreateSlot(state: RoomSignalState, viewerId: string): PeerSignalSlot {
@@ -71,7 +118,7 @@ export async function GET(
   context: { params: Promise<{ code: string }> }
 ) {
   const { code } = await context.params;
-  const state = getRoomSignalState(code);
+  const { canonicalCode, state } = await getRoomSignalState(code);
   const role = req.nextUrl.searchParams.get("role");
   const viewerId = req.nextUrl.searchParams.get("viewerId") || "default";
 
@@ -83,8 +130,14 @@ export async function GET(
     });
   }
 
+  const isNewSlot = !state.slots[viewerId];
   const slot = getOrCreateSlot(state, viewerId);
   slot.updatedAt = Date.now();
+
+  if (isNewSlot) {
+    state.updatedAt = Date.now();
+    await saveRoomSignalState(canonicalCode, state);
+  }
 
   return NextResponse.json({
     hostActive: state.hostActive,
@@ -106,14 +159,23 @@ export async function POST(
   try {
     const { code } = await context.params;
     const body = await req.json();
-    const state = getRoomSignalState(code);
+    const { canonicalCode, state } = await getRoomSignalState(code);
 
-    const { role, viewerId = "default", type, sdp, candidate, reset, sessionEpoch } = body;
+    const {
+      role,
+      viewerId = "default",
+      type,
+      sdp,
+      candidate,
+      reset,
+      sessionEpoch
+    } = body;
 
     if (reset) {
       state.hostActive = false;
       state.slots = {};
       state.updatedAt = Date.now();
+      await saveRoomSignalState(canonicalCode, state);
       return NextResponse.json({ success: true, reset: true });
     }
 
@@ -121,7 +183,6 @@ export async function POST(
       state.hostActive = true;
 
       if (type === "broadcast-start") {
-        // Mark all waiting viewers as needing a fresh offer for the new stream
         for (const slot of Object.values(state.slots)) {
           slot.sessionEpoch += 1;
           slot.needsOffer = true;
@@ -132,6 +193,7 @@ export async function POST(
           slot.updatedAt = Date.now();
         }
         state.updatedAt = Date.now();
+        await saveRoomSignalState(canonicalCode, state);
         return NextResponse.json({ success: true });
       }
 
@@ -149,6 +211,7 @@ export async function POST(
         slot.updatedAt = Date.now();
       }
       state.updatedAt = Date.now();
+      await saveRoomSignalState(canonicalCode, state);
     } else if (role === "viewer") {
       const slot = getOrCreateSlot(state, viewerId);
 
@@ -161,29 +224,37 @@ export async function POST(
         slot.viewerCandidates = [];
         slot.updatedAt = Date.now();
         state.updatedAt = Date.now();
+        await saveRoomSignalState(canonicalCode, state);
         return NextResponse.json({
           success: true,
           sessionEpoch: slot.sessionEpoch
         });
       }
 
+      if (sessionEpoch && sessionEpoch < slot.sessionEpoch) {
+        return NextResponse.json({
+          success: false,
+          ignored: true,
+          reason: "stale-epoch"
+        });
+      }
+
       if (type === "answer" && sdp) {
-        if (!sessionEpoch || sessionEpoch === slot.sessionEpoch) {
-          slot.answer = sdp;
-          slot.needsOffer = false;
-          slot.updatedAt = Date.now();
-        }
+        slot.answer = sdp;
+        slot.needsOffer = false;
+        slot.updatedAt = Date.now();
       }
       if (candidate) {
         slot.viewerCandidates.push(candidate);
         slot.updatedAt = Date.now();
       }
       state.updatedAt = Date.now();
+      await saveRoomSignalState(canonicalCode, state);
     }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, updatedAt: state.updatedAt });
   } catch (error) {
-    console.error("Signal API error:", error);
-    return NextResponse.json({ error: "Failed to process signal" }, { status: 500 });
+    console.error("Signaling error:", error);
+    return NextResponse.json({ error: "Signaling failed" }, { status: 400 });
   }
 }

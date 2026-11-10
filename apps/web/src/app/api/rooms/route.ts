@@ -1,27 +1,40 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateRoomCode, RoomStatus } from "@kshare/protocol";
-import { RoomStore, RoomHostSettings } from "@/lib/room-store";
+import { RoomStore, RoomHostSettings, normalizeRoomCode } from "@/lib/room-store";
 import { ensurePwaIconsGenerated } from "@/lib/pwa-icon-generator";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const subject = typeof body.subject === "string" && body.subject.trim() ? body.subject.trim() : "ทั่วไป";
-    const customCode = typeof body.customCode === "string" ? body.customCode.trim().toUpperCase() : "";
+    const subject =
+      typeof body.subject === "string" && body.subject.trim()
+        ? body.subject.trim()
+        : "ทั่วไป";
+    const customCode =
+      typeof body.customCode === "string"
+        ? normalizeRoomCode(body.customCode)
+        : "";
     const initialSettings = (body.settings || {}) as Partial<RoomHostSettings>;
 
-    const roomCode = customCode && customCode.length >= 4 ? customCode : generateRoomCode();
+    const roomCode =
+      customCode && customCode.replace(/[^A-Z0-9]/g, "").length >= 4
+        ? customCode
+        : generateRoomCode();
 
-    if (RoomStore.findByCode(roomCode)) {
+    const existing = await RoomStore.findByCode(roomCode);
+    if (existing) {
       return NextResponse.json(
         { error: `รหัสห้อง ${roomCode} มีการใช้งานอยู่แล้ว กรุณาใช้รหัสอื่น` },
         { status: 409 }
       );
     }
 
-    const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : `ห้อง ${roomCode}`;
+    const name =
+      typeof body.name === "string" && body.name.trim()
+        ? body.name.trim()
+        : `ห้อง ${roomCode}`;
 
-    const room = RoomStore.create({
+    const room = await RoomStore.create({
       code: roomCode,
       name,
       subject,
@@ -47,14 +60,17 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     console.error("Error creating room:", error);
-    return NextResponse.json({ error: "เกิดข้อผิดพลาดในการสร้างห้อง" }, { status: 500 });
+    return NextResponse.json(
+      { error: "เกิดข้อผิดพลาดในการสร้างห้อง" },
+      { status: 500 }
+    );
   }
 }
 
 export async function GET() {
   try {
     ensurePwaIconsGenerated();
-    const allRooms = RoomStore.getAll()
+    const allRooms = (await RoomStore.getAll())
       .slice(0, 20)
       .map((r) => ({
         id: r.id,
@@ -78,6 +94,9 @@ export async function GET() {
     return NextResponse.json({ rooms: allRooms });
   } catch (error) {
     console.error("Error fetching rooms:", error);
-    return NextResponse.json({ error: "ไม่สามารถดึงข้อมูลห้องได้" }, { status: 500 });
+    return NextResponse.json(
+      { error: "ไม่สามารถดึงข้อมูลห้องได้" },
+      { status: 500 }
+    );
   }
 }

@@ -11,7 +11,7 @@ import {
   ViewerParticipant,
   WatermarkPosition,
   getDefaultRoomSettings
-} from "@/lib/room-store";
+} from "@/lib/room-types";
 import {
   Monitor,
   Mic,

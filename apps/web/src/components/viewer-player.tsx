@@ -8,7 +8,7 @@ import {
   RoomHostSettings,
   WatermarkPosition,
   getDefaultRoomSettings
-} from "@/lib/room-store";
+} from "@/lib/room-types";
 import {
   Maximize2,
   Minimize2,

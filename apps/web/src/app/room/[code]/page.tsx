@@ -5,7 +5,7 @@ import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { UserRole, RoomStatus, formatRoomCode } from "@kshare/protocol";
 import { HostStudio } from "@/components/host-studio";
 import { ViewerPlayer } from "@/components/viewer-player";
-import { RoomHostSettings } from "@/lib/room-store";
+import { RoomHostSettings } from "@/lib/room-types";
 import { AlertCircle, ArrowLeft, Lock, KeyRound } from "lucide-react";
 
 interface RoomData {
@@ -61,10 +61,13 @@ function RoomDispatcherContent() {
         setLoading(true);
         setError(null);
 
+        const formatted = formatRoomCode(code);
         const storedHostToken =
           typeof window !== "undefined"
             ? sessionStorage.getItem(`kshare_host_${code}`) ||
-              localStorage.getItem(`kshare_host_${code}`)
+              localStorage.getItem(`kshare_host_${code}`) ||
+              sessionStorage.getItem(`kshare_host_${formatted}`) ||
+              localStorage.getItem(`kshare_host_${formatted}`)
             : null;
         const effectiveToken = queryToken || storedHostToken || undefined;
         const currentViewerId = getOrCreateViewerId();
