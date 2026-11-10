@@ -4,6 +4,8 @@ node_modules/
 
 # Next.js
 .next/
+.prisma/
+apps/web/.prisma/
 out/
 
 # Build artifacts

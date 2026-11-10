@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "postinstall": "pnpm --filter @kshare/database db:generate || true",
     "build": "turbo run build",
     "dev": "turbo run dev",
     "dev:https": "pnpm --filter web dev:https",

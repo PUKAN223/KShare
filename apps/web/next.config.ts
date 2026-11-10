@@ -1,7 +1,17 @@
+import path from "path";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  outputFileTracingRoot: path.join(__dirname, "../../"),
+  outputFileTracingIncludes: {
+    "/api/**/*": [
+      "./.prisma/client/**/*",
+      "./.next/server/**/*",
+      "../../node_modules/.prisma/client/**/*",
+      "../../node_modules/.pnpm/**/node_modules/.prisma/client/**/*"
+    ]
+  },
   transpilePackages: [
     "@kshare/ui",
     "@kshare/protocol",
