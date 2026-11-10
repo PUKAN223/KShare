@@ -5,6 +5,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
+    "dev:https": "pnpm --filter web dev:https",
     "lint": "turbo run lint",
     "clean": "turbo run clean && rm -rf node_modules",
     "db:generate": "pnpm --filter @kshare/database db:generate",

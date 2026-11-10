@@ -44,6 +44,18 @@ function DashboardContent() {
   const [newRoomCode, setNewRoomCode] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [lanIp, setLanIp] = useState<string>("");
+
+  useEffect(() => {
+    fetch("/api/network-ip")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.ip && data.ip !== "localhost") {
+          setLanIp(data.ip);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const fetchRooms = async () => {
     try {
@@ -109,8 +121,12 @@ function DashboardContent() {
   };
 
   const copyInviteLink = (code: string) => {
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const inviteUrl = `${origin}/room/${code}`;
+    const port = typeof window !== "undefined" && window.location.port ? `:${window.location.port}` : "";
+    const protocol = typeof window !== "undefined" ? window.location.protocol : "http:";
+    let inviteUrl = typeof window !== "undefined" ? `${window.location.origin}/room/${code}` : "";
+    if (lanIp && typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
+      inviteUrl = `${protocol}//${lanIp}${port}/room/${code}`;
+    }
     navigator.clipboard.writeText(inviteUrl);
     setCopiedCode(code);
     toast.success("คัดลอกลิงก์เชิญเรียบร้อยแล้ว");

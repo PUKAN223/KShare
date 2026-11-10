@@ -6,31 +6,19 @@ import { Button, Card, Badge, Input } from "@kshare/ui";
 import {
   MonitorPlay,
   StopCircle,
-  Mic,
-  MicOff,
   Copy,
   Check,
   Users,
-  Radio,
-  Settings,
   QrCode,
-  Maximize2,
-  Tv,
   ArrowLeft,
   Volume2,
   VolumeX,
-  Sparkles,
-  ShieldCheck,
-  Activity
+  Radio,
+  Tv
 } from "lucide-react";
 import { ScreenCaptureManager, CaptureMetadata } from "@kshare/capture";
-import { VdoNinjaAdapter } from "@kshare/provider-vdo-ninja";
-import {
-  SessionStatus,
-  UserRole,
-  MediaQualityStats,
-  RoomStatus
-} from "@kshare/protocol";
+import { WebRTCHostPeer } from "@/lib/webrtc-peer";
+import { RoomStatus } from "@kshare/protocol";
 import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
 
@@ -48,54 +36,28 @@ export function HostStudio({
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
   const captureManagerRef = useRef<ScreenCaptureManager | null>(null);
-  const adapterRef = useRef<VdoNinjaAdapter | null>(null);
+  const peerRef = useRef<WebRTCHostPeer | null>(null);
 
   const [isSharing, setIsSharing] = useState(false);
   const [audioEnabled, setAudioEnabled] = useState(true);
-  const [status, setStatus] = useState<SessionStatus>(SessionStatus.INITIALIZING);
   const [statusText, setStatusText] = useState("พร้อมสำหรับการแชร์หน้าจอ");
-  const [stats, setStats] = useState<MediaQualityStats | null>(null);
   const [metadata, setMetadata] = useState<CaptureMetadata | null>(null);
   const [viewersCount, setViewersCount] = useState(0);
 
   // Modals & Panels
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [copied, setCopied] = useState(false);
-
-  // Invite URL
-  const inviteUrl =
-    typeof window !== "undefined"
-      ? `${window.location.origin}/room/${roomCode}`
-      : `https://kshare.app/room/${roomCode}`;
+  const [lanIp, setLanIp] = useState<string>("");
 
   useEffect(() => {
-    // Initialize ScreenShare Adapter
-    const adapter = new VdoNinjaAdapter({ enableTurnFallback: true });
-    adapterRef.current = adapter;
-
-    adapter.onStateChange((newStatus, detail) => {
-      setStatus(newStatus);
-      if (detail) setStatusText(detail);
-    });
-
-    adapter.onStatsUpdate((newStats) => {
-      setStats(newStats);
-    });
-
-    adapter.onPeerJoin((_peerId) => {
-      setViewersCount((prev) => Math.min(prev + 1, 1));
-      toast.success("มีผู้ชมเชื่อมต่อเข้ามาในห้องแล้ว");
-    });
-
-    adapter.onPeerLeave((_peerId) => {
-      setViewersCount((prev) => Math.max(prev - 1, 0));
-      toast.info("ผู้ชมออกจากห้องแล้ว");
-    });
-
-    adapter.connect({
-      roomCode,
-      role: UserRole.HOST
-    });
+    fetch("/api/network-ip")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.ip && data.ip !== "localhost") {
+          setLanIp(data.ip);
+        }
+      })
+      .catch(() => {});
 
     // Polling room metadata to track viewers
     const interval = setInterval(async () => {
@@ -110,16 +72,30 @@ export function HostStudio({
       } catch {
         // ignore
       }
-    }, 5000);
+    }, 4000);
 
     return () => {
       clearInterval(interval);
       if (captureManagerRef.current) {
         captureManagerRef.current.stopCapture();
       }
-      adapter.disconnect();
+      if (peerRef.current) {
+        peerRef.current.close();
+      }
     };
   }, [roomCode]);
+
+  const getInviteUrl = () => {
+    if (typeof window === "undefined") return `https://kshare.app/room/${roomCode}`;
+    const port = window.location.port ? `:${window.location.port}` : "";
+    const protocol = window.location.protocol;
+    if (lanIp && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
+      return `${protocol}//${lanIp}${port}/room/${roomCode}`;
+    }
+    return `${window.location.origin}/room/${roomCode}`;
+  };
+
+  const inviteUrl = getInviteUrl();
 
   const handleStartShare = async () => {
     try {
@@ -146,9 +122,20 @@ export function HostStudio({
         videoRef.current.play().catch(() => {});
       }
 
-      if (adapterRef.current) {
-        await adapterRef.current.publish(stream);
+      // Initialize WebRTC P2P Peer Connection for broadcast
+      if (peerRef.current) {
+        peerRef.current.close();
       }
+
+      peerRef.current = new WebRTCHostPeer(roomCode, stream, (iceState) => {
+        if (iceState === "connected" || iceState === "completed") {
+          setStatusText("เชื่อมต่อกับผู้ชมเรียบร้อย (P2P Streaming)");
+        } else if (iceState === "disconnected") {
+          setStatusText("สัญญาณขาดหาย กำลังเชื่อมต่อใหม่...");
+        }
+      });
+
+      await peerRef.current.start();
 
       // Update room status on server
       await fetch(`/api/rooms/${roomCode}`, {
@@ -161,7 +148,7 @@ export function HostStudio({
         })
       });
 
-      toast.success("เริ่มแชร์หน้าจอเรียบร้อยแล้ว");
+      toast.success("เริ่มแชร์หน้าจอแล้ว พร้อมส่งสัญญาณภาพไปยังผู้ชม");
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
       toast.error(error.message);
@@ -172,13 +159,17 @@ export function HostStudio({
     if (captureManagerRef.current) {
       captureManagerRef.current.stopCapture();
     }
+    if (peerRef.current) {
+      peerRef.current.close();
+      peerRef.current = null;
+    }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
     setIsSharing(false);
     setMetadata(null);
+    setStatusText("หยุดการแชร์หน้าจอแล้ว");
 
-    // Update room status on server
     try {
       await fetch(`/api/rooms/${roomCode}`, {
         method: "PATCH",
@@ -202,26 +193,16 @@ export function HostStudio({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const togglePiP = async () => {
-    if (videoRef.current && document.pictureInPictureEnabled) {
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture();
-      } else {
-        await videoRef.current.requestPictureInPicture();
-      }
-    }
-  };
-
   return (
     <div className="min-h-screen bg-background flex flex-col relative text-foreground">
-      {/* Top Studio Bar */}
-      <div className="h-14 border-b border-border/50 bg-background/90 backdrop-blur-xl px-4 flex items-center justify-between">
+      {/* Clean Production Top Bar */}
+      <div className="h-14 border-b border-border/50 bg-background/95 backdrop-blur-md px-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Button
             variant="ghost"
             size="sm"
             onClick={() => router.push("/dashboard")}
-            className="text-xs h-8 px-2 text-muted-foreground"
+            className="text-xs h-8 px-2 text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="h-3.5 w-3.5 mr-1" />
             แดชบอร์ด
@@ -230,7 +211,7 @@ export function HostStudio({
           <div className="h-4 w-px bg-border/60" />
 
           <div className="flex items-center gap-2">
-            <span className="font-bold text-sm tracking-tight">{initialRoomName}</span>
+            <span className="font-semibold text-sm">{initialRoomName}</span>
             <Badge
               variant={isSharing ? "live" : "secondary"}
               dot
@@ -242,10 +223,10 @@ export function HostStudio({
           </div>
         </div>
 
-        {/* Viewers & Invite Button */}
+        {/* Viewers indicator & Quick Actions */}
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-secondary/80 border border-border/60 text-xs">
-            <Users className="h-3.5 w-3.5 text-orange-400" />
+            <Users className="h-3.5 w-3.5 text-primary" />
             <span className="font-mono font-medium">{viewersCount}/1</span>
             <span className="text-muted-foreground hidden sm:inline">ผู้ชม</span>
           </div>
@@ -257,14 +238,14 @@ export function HostStudio({
             className="gap-1.5 text-xs font-medium"
           >
             <QrCode className="h-3.5 w-3.5 text-primary" />
-            เชิญผู้ชม (Invite)
+            เชิญผู้ชม
           </Button>
         </div>
       </div>
 
       {/* Main Studio Viewport */}
       <main className="flex-1 p-3 sm:p-6 flex flex-col items-center justify-center relative">
-        <div className="w-full max-w-6xl aspect-video rounded-2xl overflow-hidden bg-black/90 border border-border/80 shadow-2xl relative flex items-center justify-center">
+        <div className="w-full max-w-6xl aspect-video rounded-2xl overflow-hidden bg-black border border-border/80 shadow-2xl relative flex items-center justify-center">
           <video
             ref={videoRef}
             autoPlay
@@ -275,20 +256,20 @@ export function HostStudio({
 
           {!isSharing && (
             <div className="text-center p-6 flex flex-col items-center max-w-md">
-              <div className="h-16 w-16 rounded-2xl bg-gradient-to-tr from-amber-500/20 to-orange-500/20 border border-orange-500/30 flex items-center justify-center text-orange-400 mb-4 shadow-lg shadow-orange-500/10">
-                <MonitorPlay className="h-8 w-8 animate-pulse" />
+              <div className="h-16 w-16 rounded-2xl bg-secondary/80 border border-border/60 flex items-center justify-center text-primary mb-4">
+                <MonitorPlay className="h-8 w-8" />
               </div>
               <h3 className="font-bold text-foreground text-xl mb-1.5">
                 ห้องพร้อมสำหรับการแชร์หน้าจอ
               </h3>
               <p className="text-xs sm:text-sm text-muted-foreground mb-6 leading-relaxed">
-                คลิกปุ่ม &quot;เริ่มแชร์หน้าจอ&quot; เพื่อเลือกหน้าจอ แอพ หรือแท็บที่คุณต้องการสตรีมไปยังผู้ชมแบบ 1:1 P2P
+                คลิกปุ่ม &quot;เริ่มแชร์หน้าจอ&quot; เพื่อเลือกหน้าจอหรือหน้าต่างที่ต้องการส่งให้ผู้ชม
               </p>
               <Button
                 variant="gradient"
                 size="lg"
                 onClick={handleStartShare}
-                className="font-semibold text-sm shadow-xl shadow-orange-500/25"
+                className="font-semibold text-sm shadow-lg shadow-primary/20"
               >
                 <MonitorPlay className="h-4 w-4 mr-2" />
                 เริ่มแชร์หน้าจอ
@@ -296,35 +277,24 @@ export function HostStudio({
             </div>
           )}
 
-          {/* Top Floating HUD Badges */}
           {isSharing && (
-            <div className="absolute top-4 left-4 flex flex-wrap items-center gap-2">
+            <div className="absolute top-4 left-4 flex items-center gap-2">
               <Badge variant="live" dot pulse>
-                LIVE STREAMING
+                LIVE
               </Badge>
               {metadata && (
                 <Badge variant="secondary" className="font-mono text-xs">
                   {metadata.width}×{metadata.height}
                 </Badge>
               )}
-              {stats?.frameRate && (
-                <Badge variant="cyber" className="font-mono text-xs">
-                  {stats.frameRate} FPS
-                </Badge>
-              )}
-              {stats?.latencyMs && (
-                <Badge variant="outline" className="font-mono text-xs bg-black/60 backdrop-blur-md">
-                  {stats.latencyMs}ms Latency
-                </Badge>
-              )}
             </div>
           )}
         </div>
 
-        {/* Floating Bottom Control Dock */}
-        <div className="mt-4 w-full max-w-xl">
-          <Card className="p-2 sm:p-2.5 bg-card/90 border-border/80 backdrop-blur-2xl shadow-xl flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5">
+        {/* Minimalist Production Dock */}
+        <div className="mt-4 w-full max-w-lg">
+          <Card className="p-2 bg-card/95 border-border/80 backdrop-blur-xl shadow-xl flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
               {isSharing ? (
                 <Button
                   variant="destructive"
@@ -351,51 +321,37 @@ export function HostStudio({
                 variant={audioEnabled ? "outline" : "secondary"}
                 size="sm"
                 onClick={() => setAudioEnabled(!audioEnabled)}
-                className="text-xs h-9"
+                className="text-xs h-9 px-3"
                 title={audioEnabled ? "ปิดเสียงระบบ" : "เปิดเสียงระบบ"}
               >
                 {audioEnabled ? (
-                  <Volume2 className="h-4 w-4 text-emerald-400" />
+                  <Volume2 className="h-4 w-4 text-emerald-400 mr-1" />
                 ) : (
-                  <VolumeX className="h-4 w-4 text-muted-foreground" />
+                  <VolumeX className="h-4 w-4 text-muted-foreground mr-1" />
                 )}
+                <span className="hidden sm:inline text-xs">เสียง</span>
               </Button>
-
-              {isSharing && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={togglePiP}
-                  className="text-xs h-9 hidden sm:flex"
-                  title="Picture-in-Picture"
-                >
-                  <Tv className="h-4 w-4" />
-                </Button>
-              )}
             </div>
 
-            {/* Connection Status indicator */}
-            <div className="flex items-center gap-2 px-2 text-xs text-muted-foreground">
-              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="hidden sm:inline font-mono text-[11px] truncate max-w-[140px]">
-                {statusText}
-              </span>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground pr-2 font-mono text-[11px]">
+              <span className={`h-2 w-2 rounded-full ${isSharing ? "bg-emerald-400 animate-pulse" : "bg-neutral-500"}`} />
+              <span className="truncate max-w-[150px]">{statusText}</span>
             </div>
           </Card>
         </div>
       </main>
 
-      {/* Invite Modal with Fastory-style QR Code */}
+      {/* Production Invite Modal */}
       {showInviteModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <Card glow className="w-full max-w-md p-6 bg-card/95 border-primary/30 shadow-2xl">
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <Card glow className="w-full max-w-md p-6 bg-card border-border/80 shadow-2xl">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <div className="p-2 rounded-lg bg-orange-500/15 text-orange-400">
+                <div className="p-2 rounded-lg bg-primary/10 text-primary">
                   <QrCode className="h-5 w-5" />
                 </div>
                 <h3 className="font-bold text-lg text-foreground">
-                  เชิญผู้รับชม (1:1 P2P Room)
+                  เชิญผู้รับชม
                 </h3>
               </div>
               <button
@@ -406,24 +362,21 @@ export function HostStudio({
               </button>
             </div>
 
-            <p className="text-xs text-muted-foreground mb-5">
-              ส่งลิงก์หรือให้ผู้รับชมสแกน QR Code เพื่อเปิดรับชมภาพหน้าจอของคุณได้ทันทีโดยไม่ต้องติดตั้งโปรแกรม
+            <p className="text-xs text-muted-foreground mb-4">
+              ส่งลิงก์หรือให้ผู้รับชมสแกน QR Code บนไอแพดหรืออุปกรณ์อื่นเพื่อรับชมได้ทันที
             </p>
 
-            {/* QR Code Container */}
-            <div className="flex justify-center p-4 bg-white rounded-2xl w-fit mx-auto shadow-inner mb-5">
+            <div className="flex justify-center p-4 bg-white rounded-2xl w-fit mx-auto shadow-sm mb-4">
               <QRCodeSVG value={inviteUrl} size={180} level="M" />
             </div>
 
-            {/* Room Code Callout */}
-            <div className="flex items-center justify-center gap-2 mb-4 p-2.5 rounded-xl bg-secondary/80 border border-border/70">
+            <div className="flex items-center justify-center gap-2 mb-4 p-2 rounded-xl bg-secondary/80 border border-border/70">
               <span className="text-xs text-muted-foreground">รหัสห้อง:</span>
               <span className="text-base font-bold font-mono tracking-wider text-primary">
                 {roomCode}
               </span>
             </div>
 
-            {/* Copy Invite Link */}
             <div className="flex items-center gap-2 mb-4">
               <Input
                 readOnly

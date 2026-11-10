@@ -10,6 +10,9 @@ const nextConfig: NextConfig = {
     "@kshare/capture",
     "@kshare/screen-share",
     "@kshare/provider-vdo-ninja"
+  ],
+  allowedDevOrigins: [
+    "10.194.152.189"
   ]
 };
 
