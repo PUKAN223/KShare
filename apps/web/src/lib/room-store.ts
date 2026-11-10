@@ -20,6 +20,7 @@ export interface RoomHostSettings {
   pinCode: string;
   maxViewers: number;
   isPaused: boolean;
+  rotation?: number;
   watermark: RoomWatermarkConfig;
 }
 
@@ -47,6 +48,7 @@ export interface StoredRoom {
   lastActiveAt: number;
   activeViewersCount: number;
   currentStreamId?: string;
+  thumbnailDataUrl?: string;
 }
 
 declare global {
@@ -70,6 +72,7 @@ export function getDefaultRoomSettings(code: string): RoomHostSettings {
     pinCode: "",
     maxViewers: 30,
     isPaused: false,
+    rotation: 0,
     watermark: {
       enabled: true,
       showLogo: true,
@@ -158,16 +161,25 @@ export const RoomStore = {
       streamId?: string;
       name?: string;
       subject?: string;
+      thumbnailDataUrl?: string | null;
       settings?: Partial<RoomHostSettings>;
     }
   ): StoredRoom | undefined {
     const room = this.findByCode(code);
     if (!room) return undefined;
 
-    if (updates.status !== undefined) room.status = updates.status;
+    if (updates.status !== undefined) {
+      room.status = updates.status;
+      if (updates.status === RoomStatus.IDLE) {
+        room.thumbnailDataUrl = undefined;
+      }
+    }
     if (updates.streamId !== undefined) room.currentStreamId = updates.streamId;
     if (updates.name !== undefined) room.name = updates.name;
     if (updates.subject !== undefined) room.subject = updates.subject;
+    if (updates.thumbnailDataUrl !== undefined) {
+      room.thumbnailDataUrl = updates.thumbnailDataUrl || undefined;
+    }
     if (updates.settings) {
       room.settings = {
         ...room.settings,

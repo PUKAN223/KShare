@@ -1,0 +1,75 @@
+{
+  "name": "kshare-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "KShare P2P Screen Sharing Desktop Application",
+  "desktopName": "kshare.desktop",
+  "author": "PUKAN223 <https://github.com/PUKAN223>",
+  "homepage": "https://github.com/PUKAN223/KShare",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PUKAN223/KShare.git"
+  },
+  "main": "src/main.js",
+  "scripts": {
+    "sync-icon": "node scripts/sync-icon.js",
+    "dev": "node scripts/sync-icon.js && electron .",
+    "start": "node scripts/sync-icon.js && electron .",
+    "build": "node scripts/sync-icon.js",
+    "dist": "node scripts/sync-icon.js && electron-builder --linux --win",
+    "dist:linux": "node scripts/sync-icon.js && electron-builder --linux",
+    "dist:win": "node scripts/sync-icon.js && electron-builder --win"
+  },
+  "build": {
+    "appId": "com.kshare.desktop",
+    "productName": "KShare",
+    "executableName": "kshare",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "PUKAN223",
+        "repo": "KShare",
+        "releaseType": "release"
+      }
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "linux": {
+      "icon": "assets/icon.png",
+      "executableName": "kshare",
+      "category": "Utility",
+      "maintainer": "KShare Team <support@kshare.local>",
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ]
+    },
+    "win": {
+      "icon": "assets/icon.png",
+      "executableName": "KShare",
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "mac": {
+      "category": "public.app-category.education",
+      "icon": "assets/icon.png",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
+  }
+}

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateRoomCode } from "@kshare/protocol";
+import { generateRoomCode, RoomStatus } from "@kshare/protocol";
 import { RoomStore, RoomHostSettings } from "@/lib/room-store";
+import { ensurePwaIconsGenerated } from "@/lib/pwa-icon-generator";
 
 export async function POST(req: NextRequest) {
   try {
@@ -52,6 +53,7 @@ export async function POST(req: NextRequest) {
 
 export async function GET() {
   try {
+    ensurePwaIconsGenerated();
     const allRooms = RoomStore.getAll()
       .slice(0, 20)
       .map((r) => ({
@@ -65,6 +67,11 @@ export async function GET() {
         resolution: r.settings.resolution,
         frameRate: r.settings.frameRate,
         activeViewersCount: r.activeViewersCount,
+        thumbnailDataUrl:
+          (r.status === RoomStatus.LIVE || r.status === RoomStatus.ACTIVE) &&
+          !r.settings.isPaused
+            ? r.thumbnailDataUrl
+            : undefined,
         createdAt: r.createdAt
       }));
 

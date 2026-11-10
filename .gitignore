@@ -8,6 +8,8 @@ out/
 
 # Build artifacts
 dist/
+release/
+apps/desktop/release/
 .turbo/
 
 # Environment files

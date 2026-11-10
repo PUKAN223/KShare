@@ -36,7 +36,8 @@ import {
   Shield,
   Gauge,
   Sparkles,
-  Tv
+  Tv,
+  RotateCw
 } from "lucide-react";
 
 interface HostStudioProps {
@@ -226,6 +227,63 @@ export function HostStudio({
     }
   }, [stream]);
 
+  // Periodically capture live thumbnail for the room list screen
+  useEffect(() => {
+    if (status !== RoomStatus.LIVE || !stream || settings.isPaused) {
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 480;
+    canvas.height = 270;
+    const ctx = canvas.getContext("2d");
+
+    const captureAndUpload = () => {
+      const video = videoRef.current;
+      if (!video || !ctx || video.videoWidth === 0 || video.videoHeight === 0) {
+        return;
+      }
+
+      const rot = ((settings.rotation || 0) % 360 + 360) % 360;
+      const isRotated90 = rot === 90 || rot === 270;
+      const srcW = isRotated90 ? video.videoHeight : video.videoWidth;
+      const srcH = isRotated90 ? video.videoWidth : video.videoHeight;
+
+      ctx.fillStyle = "#09090b";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const scale = Math.min(canvas.width / srcW, canvas.height / srcH);
+      const drawW = video.videoWidth * scale;
+      const drawH = video.videoHeight * scale;
+
+      ctx.save();
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      if (rot !== 0) {
+        ctx.rotate((rot * Math.PI) / 180);
+      }
+      ctx.drawImage(video, -drawW / 2, -drawH / 2, drawW, drawH);
+      ctx.restore();
+
+      const thumbnailDataUrl = canvas.toDataURL("image/jpeg", 0.65);
+      fetch(`/api/rooms/${roomCode}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hostToken,
+          thumbnailDataUrl
+        })
+      }).catch(() => {});
+    };
+
+    const initialTimer = setTimeout(captureAndUpload, 900);
+    const intervalTimer = setInterval(captureAndUpload, 4000);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(intervalTimer);
+    };
+  }, [status, stream, settings.isPaused, settings.rotation, roomCode, hostToken]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -323,7 +381,8 @@ export function HostStudio({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         hostToken,
-        status: RoomStatus.IDLE
+        status: RoomStatus.IDLE,
+        thumbnailDataUrl: null
       })
     }).catch(() => {});
   };
@@ -338,6 +397,11 @@ export function HostStudio({
     const next = !systemAudio;
     setSystemAudio(next);
     captureManager.setSystemAudioEnabled(next);
+  };
+
+  const handleCycleRotation = () => {
+    const nextRotation = ((settings.rotation || 0) + 90) % 360;
+    patchSettings({ rotation: nextRotation });
   };
 
   const handleToggleMic = async () => {
@@ -408,11 +472,10 @@ export function HostStudio({
               handleStopBroadcast();
               router.push("/");
             }}
-            className="h-8 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.08] text-zinc-400 hover:text-zinc-100 flex items-center gap-1.5 text-xs font-medium transition-colors"
+            className="h-8 w-8 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.08] text-zinc-400 hover:text-zinc-100 flex items-center justify-center transition-colors"
             title="กลับหน้าหลัก"
           >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">ออก</span>
+            <ArrowLeft className="w-4 h-4" />
           </button>
 
           <div className="h-4 w-px bg-white/[0.08]" />
@@ -492,23 +555,22 @@ export function HostStudio({
 
           <button
             onClick={() => setShowInviteModal(true)}
-            className="h-8 px-3 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center gap-1.5 text-xs font-medium transition-colors"
+            className="h-8 w-8 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center justify-center transition-colors"
+            title="QR เข้าห้อง"
           >
-            <QrCode className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">QR เข้าห้อง</span>
+            <QrCode className="w-4 h-4" />
           </button>
 
           <button
             onClick={() => setSidebarOpen((v) => !v)}
-            className={`h-8 px-2.5 rounded-lg border flex items-center gap-1.5 text-xs font-medium transition-colors ${
+            className={`h-8 w-8 rounded-lg border flex items-center justify-center transition-colors ${
               sidebarOpen
                 ? "bg-zinc-800 border-white/15 text-zinc-100"
                 : "bg-zinc-900 border-white/[0.08] text-zinc-400 hover:text-zinc-200"
             }`}
-            title="ตั้งค่าสตรีมและห้องเรียน"
+            title="ตั้งค่าห้อง"
           >
-            <Sliders className="w-3.5 h-3.5" />
-            <span className="hidden md:inline">ตั้งค่า</span>
+            <Sliders className="w-4 h-4" />
           </button>
         </div>
       </header>
@@ -539,6 +601,10 @@ export function HostStudio({
                     autoPlay
                     playsInline
                     muted
+                    style={{
+                      transform: `rotate(${settings.rotation || 0}deg)`,
+                      transformOrigin: "center center"
+                    }}
                     className={`w-full h-full object-contain transition-all duration-200 ${
                       settings.isPaused ? "opacity-25 blur-md scale-[0.99]" : "opacity-100"
                     }`}
@@ -627,39 +693,49 @@ export function HostStudio({
                 <>
                   <button
                     onClick={handleTogglePause}
-                    className={`h-10 px-3.5 rounded-xl text-xs font-medium flex items-center gap-2 transition-colors ${
+                    className={`h-10 w-10 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${
                       settings.isPaused
-                        ? "bg-amber-500 text-zinc-950 font-semibold"
+                        ? "bg-amber-500 text-zinc-950"
                         : "bg-zinc-800/80 hover:bg-zinc-800 text-zinc-200"
                     }`}
-                    title="พักหน้าจอชั่วคราว"
+                    title={settings.isPaused ? "แสดงหน้าจอต่อ" : "พักหน้าจอชั่วคราว"}
                   >
                     {settings.isPaused ? (
-                      <>
-                        <Play className="w-4 h-4 fill-current" />
-                        <span>แสดงจอต่อ</span>
-                      </>
+                      <Play className="w-4 h-4 fill-current" />
                     ) : (
-                      <>
-                        <Pause className="w-4 h-4" />
-                        <span>พักหน้าจอ</span>
-                      </>
+                      <Pause className="w-4 h-4" />
                     )}
                   </button>
 
                   <button
                     onClick={handleStartBroadcast}
-                    className="h-10 px-3.5 rounded-xl bg-zinc-800/80 hover:bg-zinc-800 text-zinc-200 text-xs font-medium flex items-center gap-2 transition-colors"
+                    className="h-10 w-10 rounded-xl bg-zinc-800/80 hover:bg-zinc-800 text-zinc-200 flex items-center justify-center transition-colors cursor-pointer"
                     title="สลับหน้าต่างที่แชร์"
                   >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">สลับหน้าจอ</span>
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    onClick={handleCycleRotation}
+                    className={`h-10 ${
+                      settings.rotation ? "px-2.5" : "w-10"
+                    } rounded-xl flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                      settings.rotation
+                        ? "bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold"
+                        : "bg-zinc-800/80 hover:bg-zinc-800 text-zinc-300"
+                    }`}
+                    title="หมุนหน้าจอ 90° (แก้ภาพกลับด้าน)"
+                  >
+                    <RotateCw className="w-4 h-4 text-amber-400" />
+                    {settings.rotation ? (
+                      <span className="text-[11px] font-mono">{settings.rotation}°</span>
+                    ) : null}
                   </button>
                 </>
               ) : (
                 <button
                   onClick={handleStartBroadcast}
-                  className="h-10 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs flex items-center gap-2 transition-colors"
+                  className="h-10 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs flex items-center gap-2 transition-colors cursor-pointer"
                 >
                   <Monitor className="w-4 h-4" />
                   <span>เริ่มแชร์หน้าจอ</span>
@@ -671,37 +747,35 @@ export function HostStudio({
               {/* System Audio Toggle */}
               <button
                 onClick={handleToggleSystemAudio}
-                className={`h-10 px-3 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                className={`h-10 w-10 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${
                   systemAudio
                     ? "bg-zinc-800/90 text-emerald-400 border border-emerald-500/20"
                     : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
                 }`}
-                title="เสียงระบบคอมพิวเตอร์"
+                title={systemAudio ? "เปิดเสียงระบบอยู่ (คลิกเพื่อปิด)" : "ปิดเสียงระบบ (คลิกเพื่อเปิด)"}
               >
                 {systemAudio ? (
                   <Volume2 className="w-4 h-4" />
                 ) : (
                   <VolumeX className="w-4 h-4" />
                 )}
-                <span className="hidden md:inline">เสียงระบบ</span>
               </button>
 
               {/* Microphone Toggle */}
               <button
                 onClick={handleToggleMic}
-                className={`h-10 px-3 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                className={`h-10 w-10 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${
                   micEnabled
                     ? "bg-zinc-800/90 text-amber-400 border border-amber-500/25"
                     : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
                 }`}
-                title="ไมโครโฟนผู้สอน"
+                title={micEnabled ? "เปิดไมค์อยู่ (คลิกเพื่อปิด)" : "ปิดไมค์ (คลิกเพื่อเปิด)"}
               >
                 {micEnabled ? (
                   <Mic className="w-4 h-4" />
                 ) : (
                   <MicOff className="w-4 h-4" />
                 )}
-                <span className="hidden md:inline">ไมค์</span>
               </button>
 
               {/* Watermark Quick Toggle */}
@@ -714,7 +788,7 @@ export function HostStudio({
                     }
                   })
                 }
-                className={`h-10 px-3 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                className={`h-10 w-10 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${
                   settings.watermark.enabled
                     ? "bg-zinc-800/90 text-amber-300 border border-amber-500/20"
                     : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
@@ -722,27 +796,23 @@ export function HostStudio({
                 title="เปิด/ปิดลายน้ำมุมจอ"
               >
                 <Stamp className="w-4 h-4" />
-                <span className="hidden md:inline">ลายน้ำ</span>
               </button>
 
               {/* Lock Room Quick Toggle */}
               <button
                 onClick={() => patchSettings({ isLocked: !settings.isLocked })}
-                className={`h-10 px-3 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                className={`h-10 w-10 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${
                   settings.isLocked
                     ? "bg-rose-500/20 text-rose-300 border border-rose-500/30"
                     : "bg-zinc-900 text-zinc-400 hover:text-zinc-200"
                 }`}
-                title="ล็อกห้องไม่ให้คนใหม่เข้าเพิ่ม"
+                title={settings.isLocked ? "ห้องล็อกอยู่ (คลิกเพื่อปลดล็อก)" : "ห้องเปิดรับ (คลิกเพื่อล็อก)"}
               >
                 {settings.isLocked ? (
                   <Lock className="w-4 h-4" />
                 ) : (
                   <Unlock className="w-4 h-4" />
                 )}
-                <span className="hidden lg:inline">
-                  {settings.isLocked ? "ล็อกอยู่" : "เปิดรับ"}
-                </span>
               </button>
 
               {status === RoomStatus.LIVE && (
@@ -750,10 +820,11 @@ export function HostStudio({
                   <div className="h-5 w-px bg-white/[0.08] mx-1" />
                   <button
                     onClick={handleStopBroadcast}
-                    className="h-10 px-4 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                    className="h-10 px-3 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    title="หยุดแชร์หน้าจอ"
                   >
                     <StopCircle className="w-4 h-4" />
-                    <span>หยุดแชร์</span>
+                    <span className="hidden sm:inline">หยุด</span>
                   </button>
                 </>
               )}

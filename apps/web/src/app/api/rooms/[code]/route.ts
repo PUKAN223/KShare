@@ -131,7 +131,16 @@ export async function PATCH(
   try {
     const { code } = await context.params;
     const body = await req.json();
-    const { hostToken, status, streamId, name, subject, settings, kickViewerId } = body;
+    const {
+      hostToken,
+      status,
+      streamId,
+      name,
+      subject,
+      thumbnailDataUrl,
+      settings,
+      kickViewerId
+    } = body;
 
     const access = RoomStore.verifyAccess(code, hostToken);
     if (!access.valid || access.role !== UserRole.HOST) {
@@ -147,6 +156,7 @@ export async function PATCH(
       streamId,
       name,
       subject,
+      thumbnailDataUrl,
       settings: settings as Partial<RoomHostSettings> | undefined
     });
 

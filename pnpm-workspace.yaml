@@ -4,4 +4,6 @@ packages:
 allowBuilds:
   '@prisma/client': true
   '@prisma/engines': true
+  electron: true
+  electron-winstaller: true
   prisma: true
