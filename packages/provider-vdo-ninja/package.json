@@ -1,0 +1,19 @@
+{
+  "name": "@kshare/provider-vdo-ninja",
+  "version": "1.0.0",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kshare/protocol": "workspace:*",
+    "@kshare/screen-share": "workspace:*",
+    "@vdoninja/sdk": "^1.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "typescript": "^5.8.2"
+  }
+}

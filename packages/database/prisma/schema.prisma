@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String           @id @default(uuid())
+  email        String           @unique
+  name         String
+  passwordHash String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  rooms        Room[]           @relation("RoomOwner")
+  memberships  RoomMembership[]
+  sessions     Session[]        @relation("UserSessions")
+}
+
+model Room {
+  id          String           @id @default(uuid())
+  code        String           @unique
+  name        String
+  ownerId     String?
+  status      String           @default("IDLE") // IDLE, ACTIVE, CLOSED
+  createdAt   DateTime         @default(now())
+  expiresAt   DateTime?
+  owner       User?            @relation("RoomOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  memberships RoomMembership[]
+  sessions    Session[]
+
+  @@index([code])
+  @@index([ownerId])
+}
+
+model RoomMembership {
+  id       String    @id @default(uuid())
+  roomId   String
+  userId   String
+  role     String    @default("VIEWER") // HOST, VIEWER
+  joinedAt DateTime  @default(now())
+  leftAt   DateTime?
+  room     Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+  @@index([roomId])
+  @@index([userId])
+}
+
+model Session {
+  id        String    @id @default(uuid())
+  roomId    String
+  hostId    String
+  status    String    @default("INITIALIZING") // INITIALIZING, CONNECTED, ENDED
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+  room      Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  host      User      @relation("UserSessions", fields: [hostId], references: [id], onDelete: Cascade)
+
+  @@index([roomId])
+  @@index([hostId])
+}
