@@ -41,13 +41,23 @@ async function getRoomSignalState(code: string): Promise<{
       where: { code: { in: candidates } },
       select: { code: true, signalsJson: true }
     });
-    if (row && row.signalsJson && row.signalsJson !== "{}") {
-      const dbState = JSON.parse(row.signalsJson) as RoomSignalState;
-      if (dbState && (!state || (dbState.updatedAt || 0) >= (state.updatedAt || 0))) {
-        state = dbState;
+    if (row) {
+      if (row.signalsJson && row.signalsJson !== "{}") {
+        const dbState = JSON.parse(row.signalsJson) as RoomSignalState;
+        if (dbState) {
+          state = dbState;
+          roomSignals.set(row.code, state);
+        }
+      }
+      if (!state) {
+        state = {
+          hostActive: false,
+          slots: {},
+          updatedAt: Date.now()
+        };
         roomSignals.set(row.code, state);
       }
-      return { canonicalCode: row.code, state: pruneStaleSlots(state!) };
+      return { canonicalCode: row.code, state: pruneStaleSlots(state) };
     }
   } catch {
     // Fallback to memory state
@@ -82,9 +92,8 @@ async function saveRoomSignalState(
 ): Promise<void> {
   roomSignals.set(canonicalCode, state);
   try {
-    const candidates = getCandidateCodes(canonicalCode);
-    await prisma.room.updateMany({
-      where: { code: { in: candidates } },
+    await prisma.room.update({
+      where: { code: canonicalCode },
       data: {
         signalsJson: JSON.stringify(state),
         lastActiveAt: new Date()
@@ -167,6 +176,7 @@ export async function POST(
       type,
       sdp,
       candidate,
+      candidates,
       reset,
       sessionEpoch
     } = body;
@@ -199,20 +209,29 @@ export async function POST(
 
       const slot = getOrCreateSlot(state, viewerId);
       if (type === "offer" && sdp) {
+        if (typeof sessionEpoch === "number" && sessionEpoch > slot.sessionEpoch) {
+          slot.sessionEpoch = sessionEpoch;
+        }
         slot.offer = sdp;
         slot.answer = null;
         slot.needsOffer = false;
-        slot.hostCandidates = [];
+        slot.hostCandidates = Array.isArray(candidates) ? [...candidates] : [];
         slot.viewerCandidates = [];
         slot.updatedAt = Date.now();
-      }
-      if (candidate) {
-        slot.hostCandidates.push(candidate);
-        slot.updatedAt = Date.now();
+      } else {
+        if (candidate) {
+          slot.hostCandidates.push(candidate);
+          slot.updatedAt = Date.now();
+        }
+        if (Array.isArray(candidates) && candidates.length > 0) {
+          slot.hostCandidates.push(...candidates);
+          slot.updatedAt = Date.now();
+        }
       }
       state.updatedAt = Date.now();
       await saveRoomSignalState(canonicalCode, state);
     } else if (role === "viewer") {
+      state.hostActive = true;
       const slot = getOrCreateSlot(state, viewerId);
 
       if (type === "request-offer") {
@@ -242,11 +261,19 @@ export async function POST(
       if (type === "answer" && sdp) {
         slot.answer = sdp;
         slot.needsOffer = false;
+        if (Array.isArray(candidates) && candidates.length > 0) {
+          slot.viewerCandidates.push(...candidates);
+        }
         slot.updatedAt = Date.now();
-      }
-      if (candidate) {
-        slot.viewerCandidates.push(candidate);
-        slot.updatedAt = Date.now();
+      } else {
+        if (candidate) {
+          slot.viewerCandidates.push(candidate);
+          slot.updatedAt = Date.now();
+        }
+        if (Array.isArray(candidates) && candidates.length > 0) {
+          slot.viewerCandidates.push(...candidates);
+          slot.updatedAt = Date.now();
+        }
       }
       state.updatedAt = Date.now();
       await saveRoomSignalState(canonicalCode, state);

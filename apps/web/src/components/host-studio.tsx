@@ -234,49 +234,58 @@ export function HostStudio({
     }
 
     const canvas = document.createElement("canvas");
-    canvas.width = 480;
-    canvas.height = 270;
+    canvas.width = 360;
+    canvas.height = 202;
     const ctx = canvas.getContext("2d");
+    let uploading = false;
 
-    const captureAndUpload = () => {
+    const captureAndUpload = async () => {
+      if (uploading) return;
       const video = videoRef.current;
       if (!video || !ctx || video.videoWidth === 0 || video.videoHeight === 0) {
         return;
       }
 
-      const rot = ((settings.rotation || 0) % 360 + 360) % 360;
-      const isRotated90 = rot === 90 || rot === 270;
-      const srcW = isRotated90 ? video.videoHeight : video.videoWidth;
-      const srcH = isRotated90 ? video.videoWidth : video.videoHeight;
+      uploading = true;
+      try {
+        const rot = (((settings.rotation || 0) % 360) + 360) % 360;
+        const isRotated90 = rot === 90 || rot === 270;
+        const srcW = isRotated90 ? video.videoHeight : video.videoWidth;
+        const srcH = isRotated90 ? video.videoWidth : video.videoHeight;
 
-      ctx.fillStyle = "#09090b";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#09090b";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      const scale = Math.min(canvas.width / srcW, canvas.height / srcH);
-      const drawW = video.videoWidth * scale;
-      const drawH = video.videoHeight * scale;
+        const scale = Math.min(canvas.width / srcW, canvas.height / srcH);
+        const drawW = video.videoWidth * scale;
+        const drawH = video.videoHeight * scale;
 
-      ctx.save();
-      ctx.translate(canvas.width / 2, canvas.height / 2);
-      if (rot !== 0) {
-        ctx.rotate((rot * Math.PI) / 180);
+        ctx.save();
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        if (rot !== 0) {
+          ctx.rotate((rot * Math.PI) / 180);
+        }
+        ctx.drawImage(video, -drawW / 2, -drawH / 2, drawW, drawH);
+        ctx.restore();
+
+        const thumbnailDataUrl = canvas.toDataURL("image/jpeg", 0.55);
+        await fetch(`/api/rooms/${roomCode}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            hostToken,
+            thumbnailDataUrl
+          })
+        });
+      } catch {
+        // ignore
+      } finally {
+        uploading = false;
       }
-      ctx.drawImage(video, -drawW / 2, -drawH / 2, drawW, drawH);
-      ctx.restore();
-
-      const thumbnailDataUrl = canvas.toDataURL("image/jpeg", 0.65);
-      fetch(`/api/rooms/${roomCode}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          hostToken,
-          thumbnailDataUrl
-        })
-      }).catch(() => {});
     };
 
-    const initialTimer = setTimeout(captureAndUpload, 900);
-    const intervalTimer = setInterval(captureAndUpload, 4000);
+    const initialTimer = setTimeout(captureAndUpload, 1200);
+    const intervalTimer = setInterval(captureAndUpload, 8000);
 
     return () => {
       clearTimeout(initialTimer);

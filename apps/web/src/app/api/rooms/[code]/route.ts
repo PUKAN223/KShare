@@ -15,7 +15,12 @@ export async function GET(
     }
 
     const viewerId = req.nextUrl.searchParams.get("viewerId");
-    if (viewerId && room.participants[viewerId] && !room.participants[viewerId].kicked) {
+    if (
+      viewerId &&
+      room.participants[viewerId] &&
+      !room.participants[viewerId].kicked &&
+      Date.now() - room.participants[viewerId].lastSeenAt > 12000
+    ) {
       const upserted = await RoomStore.upsertParticipant(room.code, {
         viewerId,
         displayName: room.participants[viewerId].displayName,

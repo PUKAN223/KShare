@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateRoomCode, RoomStatus } from "@kshare/protocol";
 import { RoomStore, RoomHostSettings, normalizeRoomCode } from "@/lib/room-store";
-import { ensurePwaIconsGenerated } from "@/lib/pwa-icon-generator";
 
 export async function POST(req: NextRequest) {
   try {
@@ -69,7 +68,6 @@ export async function POST(req: NextRequest) {
 
 export async function GET() {
   try {
-    ensurePwaIconsGenerated();
     const allRooms = (await RoomStore.getAll())
       .slice(0, 20)
       .map((r) => ({
