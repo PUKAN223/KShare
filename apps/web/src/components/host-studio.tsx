@@ -593,24 +593,40 @@ export function HostStudio({
                   )}
                 </>
               ) : (
-                <div className="max-w-md text-center px-6 py-10">
-                  <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center mx-auto mb-5 text-amber-400 shadow-inner">
-                    <Monitor className="w-8 h-8" />
+                <div className="max-w-2xl w-full px-6 py-8 flex flex-col md:flex-row items-center justify-center gap-8">
+                  <div className="text-center md:text-left space-y-4 max-w-sm">
+                    <div className="w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center mx-auto md:mx-0 text-amber-400">
+                      <Monitor className="w-7 h-7" />
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-bold text-zinc-100">
+                        พร้อมแชร์หน้าจอเข้าห้องเรียน
+                      </h2>
+                      <p className="text-xs text-zinc-400 leading-relaxed mt-1.5">
+                        กดปุ่มด้านล่างเพื่อเลือกหน้าต่างสไลด์หรือหน้าจอที่ต้องการแชร์ นักเรียนสามารถสแกน QR Code ด้านข้างเพื่อรอรับภาพได้ทันที
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleStartBroadcast}
+                      className="px-6 py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-sm inline-flex items-center gap-2 shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
+                    >
+                      <Monitor className="w-4 h-4" />
+                      เลือกหน้าจอที่จะแชร์เลย
+                    </button>
                   </div>
-                  <h2 className="text-lg font-bold text-zinc-100 mb-2">
-                    พร้อมแชร์หน้าจอเข้าห้องเรียน
-                  </h2>
-                  <p className="text-xs text-zinc-400 leading-relaxed mb-6">
-                    เลือกหน้าต่างโปรแกรม สไลด์การสอน หรือทั้งหน้าจอเพื่อเริ่มสตรีมแบบ P2P
-                    ความหน่วงต่ำไปยัง iPad และอุปกรณ์ในห้องเรียน
-                  </p>
-                  <button
-                    onClick={handleStartBroadcast}
-                    className="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-sm inline-flex items-center gap-2 shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
-                  >
-                    <Monitor className="w-4 h-4" />
-                    เลือกหน้าจอที่จะแชร์
-                  </button>
+
+                  {/* Quick Join Card right on the waiting canvas */}
+                  <div className="p-5 rounded-2xl bg-zinc-900/90 border border-white/10 text-center space-y-3 shrink-0 shadow-xl">
+                    <div className="bg-white p-3.5 rounded-xl mx-auto w-fit">
+                      {shareUrl && <QRCodeSVG value={shareUrl} size={136} />}
+                    </div>
+                    <div>
+                      <p className="text-[11px] text-zinc-400">รหัสเข้าห้องเรียน</p>
+                      <p className="text-xl font-mono font-bold tracking-widest text-amber-400">
+                        {formatRoomCode(roomCode)}
+                      </p>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

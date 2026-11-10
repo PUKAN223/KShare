@@ -196,13 +196,28 @@ export function ViewerPlayer({
   };
 
   const handleFullscreen = () => {
-    if (!containerRef.current) return;
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().catch(() => {});
-      setIsFullscreen(true);
-    } else {
+    const container = containerRef.current;
+    const video = videoRef.current as HTMLVideoElement & {
+      webkitEnterFullscreen?: () => void;
+    };
+
+    if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
       setIsFullscreen(false);
+      return;
+    }
+
+    if (container && typeof container.requestFullscreen === "function") {
+      container
+        .requestFullscreen()
+        .then(() => setIsFullscreen(true))
+        .catch(() => {
+          if (video?.webkitEnterFullscreen) {
+            video.webkitEnterFullscreen();
+          }
+        });
+    } else if (video?.webkitEnterFullscreen) {
+      video.webkitEnterFullscreen();
     }
   };
 
