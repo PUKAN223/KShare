@@ -3,9 +3,9 @@ import "./globals.css";
 import { Toaster } from "sonner";
 
 export const metadata: Metadata = {
-  title: "SCiUS Share — ระบบแชร์หน้าจอห้องเรียนวิทยาศาสตร์ วมว. (กระทรวง อว.)",
+  title: "KShare — Classroom Screen Sharing",
   description:
-    "ระบบแชร์หน้าจอและถ่ายทอดสดแบบ Peer-to-Peer สำหรับโครงการสนับสนุนการจัดตั้งห้องเรียนวิทยาศาสตร์ในโรงเรียน โดยการกำกับดูแลของมหาวิทยาลัย (วมว.) กระทรวงการอุดมศึกษา วิทยาศาสตร์ วิจัยและนวัตกรรม",
+    "ระบบแชร์หน้าจอแบบ Peer-to-Peer ความละเอียดสูง ความหน่วงต่ำ สำหรับใช้งานในห้องเรียนและการทำงานร่วมกัน",
   icons: {
     icon: "/scius-logo.png",
     apple: "/scius-logo.png"
@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0b0f19",
+  themeColor: "#09090b",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1

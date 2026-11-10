@@ -1,117 +1,201 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Button, Badge } from "@kshare/ui";
+import { RoomStatus, formatRoomCode } from "@kshare/protocol";
+import { WebRTCViewerPeer, LiveStreamMetrics } from "@/lib/webrtc-peer";
+import {
+  RoomHostSettings,
+  WatermarkPosition,
+  getDefaultRoomSettings
+} from "@/lib/room-store";
 import {
   Maximize2,
   Minimize2,
   Volume2,
   VolumeX,
+  RefreshCw,
+  ArrowLeft,
+  Camera,
+  ZoomIn,
+  ZoomOut,
+  Pause,
   Radio,
-  ArrowLeft
+  Sparkles,
+  Check
 } from "lucide-react";
-import { WebRTCViewerPeer } from "@/lib/webrtc-peer";
-import { RoomStatus } from "@kshare/protocol";
-import { toast } from "sonner";
 
 interface ViewerPlayerProps {
   roomCode: string;
-  initialRoomName: string;
+  roomName: string;
+  subject?: string;
+  viewerId: string;
+  initialStatus: RoomStatus;
+  initialSettings?: RoomHostSettings;
 }
 
-export function ViewerPlayer({ roomCode, initialRoomName }: ViewerPlayerProps) {
+const POSITION_CLASSES: Record<WatermarkPosition, string> = {
+  "bottom-right": "bottom-4 right-4",
+  "bottom-left": "bottom-4 left-4",
+  "top-right": "top-4 right-4",
+  "top-left": "top-4 left-4"
+};
+
+export function ViewerPlayer({
+  roomCode,
+  roomName,
+  subject = "ทั่วไป",
+  viewerId,
+  initialStatus,
+  initialSettings
+}: ViewerPlayerProps) {
   const router = useRouter();
-  const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<WebRTCViewerPeer | null>(null);
 
-  const [isLive, setIsLive] = useState(false);
+  const [status, setStatus] = useState<RoomStatus>(initialStatus);
+  const [settings, setSettings] = useState<RoomHostSettings>(
+    () => initialSettings || getDefaultRoomSettings(roomCode)
+  );
+  const [inboundStream, setInboundStream] = useState<MediaStream | null>(null);
+  const [peerState, setPeerState] = useState<string>("connecting");
+  const [kicked, setKicked] = useState(false);
+
+  // Player controls
+  const [isMuted, setIsMuted] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [roomName, setRoomName] = useState(initialRoomName);
-  const [statusText, setStatusText] = useState("กำลังเชื่อมต่อห้องแชร์หน้าจอ...");
+  const [zoomLevel, setZoomLevel] = useState<number>(1);
+  const [fitMode, setFitMode] = useState<"contain" | "cover">("contain");
+  const [snapshotSaved, setSnapshotSaved] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
 
+  const [metrics, setMetrics] = useState<LiveStreamMetrics>({
+    bitrateKbps: 0,
+    frameRate: 60,
+    width: 1920,
+    height: 1080,
+    rttMs: 14,
+    connectedPeers: 1,
+    transportMode: "P2P Direct"
+  });
+
+  // Start WebRTC viewer peer for this viewerId
   useEffect(() => {
-    let isMounted = true;
-
-    // 1. Join room on server
-    fetch(`/api/rooms/${roomCode}/join`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ displayName: "Viewer" })
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (!isMounted) return;
-        if (data.room?.name) setRoomName(data.room.name);
-      })
-      .catch(() => {});
-
-    // 2. Initialize WebRTC P2P Receiver
     const peer = new WebRTCViewerPeer(
       roomCode,
+      viewerId,
       (remoteStream) => {
-        if (!isMounted) return;
-        setIsLive(true);
-        setStatusText("รับสัญญาณภาพหน้าจอสดแล้ว");
-
-        if (videoRef.current) {
-          videoRef.current.srcObject = remoteStream;
-          videoRef.current
-            .play()
-            .catch(() => {
-              // If browser requires user interaction for sound, mute and play video first
-              if (videoRef.current) {
-                videoRef.current.muted = true;
-                setIsMuted(true);
-                videoRef.current.play().catch(() => {});
-              }
-            });
-        }
+        setInboundStream((prev) => {
+          if (prev && prev.id === remoteStream.id) {
+            return new MediaStream(remoteStream.getTracks());
+          }
+          return remoteStream;
+        });
+        setStatus(RoomStatus.LIVE);
       },
-      (iceState) => {
-        if (!isMounted) return;
-        if (iceState === "connected" || iceState === "completed") {
-          setStatusText("เชื่อมต่อ P2P สำเร็จ");
-        } else if (iceState === "disconnected") {
-          setStatusText("สัญญาณขาดหาย กำลังรอภาพ...");
-        }
+      (state) => {
+        setPeerState(state);
+      },
+      (liveMetrics) => {
+        setMetrics(liveMetrics);
       }
     );
 
-    peerRef.current = peer;
     peer.start();
+    peerRef.current = peer;
 
-    // 3. Poll room state (if host stops sharing)
-    const pollInterval = setInterval(async () => {
-      if (!isMounted) return;
+    return () => {
+      peer.close();
+      peerRef.current = null;
+    };
+  }, [roomCode, viewerId]);
+
+  // Bind MediaStream to <video> whenever stream or status updates
+  useEffect(() => {
+    const videoEl = videoRef.current;
+    if (!videoEl || !inboundStream) return;
+
+    if (videoEl.srcObject !== inboundStream) {
+      videoEl.srcObject = inboundStream;
+    }
+
+    videoEl.muted = isMuted;
+    videoEl.play().catch(() => {
+      // Fallback: keep muted so iPad Safari allows autoplay
+      videoEl.muted = true;
+      setIsMuted(true);
+      videoEl.play().catch(() => {});
+    });
+  }, [inboundStream, status, isMuted]);
+
+  // Poll room status, settings, and send viewer heartbeat
+  useEffect(() => {
+    const pollRoom = async () => {
       try {
-        const res = await fetch(`/api/rooms/${roomCode}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.room?.status === RoomStatus.IDLE) {
-            setIsLive(false);
-            if (videoRef.current) {
-              videoRef.current.srcObject = null;
-            }
+        const res = await fetch(
+          `/api/rooms/${roomCode}?viewerId=${encodeURIComponent(viewerId)}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.kicked) {
+          setKicked(true);
+          peerRef.current?.close();
+          return;
+        }
+        if (data.room) {
+          setStatus(data.room.status);
+          if (data.room.settings) {
+            setSettings(data.room.settings);
           }
         }
       } catch {
         // ignore
       }
-    }, 4000);
-
-    return () => {
-      isMounted = false;
-      clearInterval(pollInterval);
-      if (peerRef.current) {
-        peerRef.current.close();
-      }
     };
-  }, [roomCode]);
 
-  const toggleFullscreen = () => {
+    const interval = setInterval(pollRoom, 3000);
+    return () => clearInterval(interval);
+  }, [roomCode, viewerId]);
+
+  const handleToggleMute = () => {
+    if (!videoRef.current) return;
+    const nextMuted = !isMuted;
+    videoRef.current.muted = nextMuted;
+    setIsMuted(nextMuted);
+    if (!nextMuted) {
+      videoRef.current.play().catch(() => {});
+    }
+  };
+
+  const handleReconnect = useCallback(async () => {
+    setReconnecting(true);
+    await peerRef.current?.requestFreshOffer();
+    setTimeout(() => setReconnecting(false), 900);
+  }, []);
+
+  const handleSnapshot = () => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/png");
+    const link = document.createElement("a");
+    link.download = `KShare-${roomCode}-${Date.now()}.png`;
+    link.href = dataUrl;
+    link.click();
+
+    setSnapshotSaved(true);
+    setTimeout(() => setSnapshotSaved(false), 2000);
+  };
+
+  const handleFullscreen = () => {
     if (!containerRef.current) return;
     if (!document.fullscreenElement) {
       containerRef.current.requestFullscreen().catch(() => {});
@@ -122,124 +206,278 @@ export function ViewerPlayer({ roomCode, initialRoomName }: ViewerPlayerProps) {
     }
   };
 
-  const toggleMute = () => {
-    if (videoRef.current) {
-      const nextMuted = !isMuted;
-      videoRef.current.muted = nextMuted;
-      setIsMuted(nextMuted);
-      if (!nextMuted) {
-        videoRef.current.play().catch(() => {});
-      }
-    }
+  const cycleZoom = (delta: number) => {
+    setZoomLevel((prev) => {
+      const next = Math.round((prev + delta) * 100) / 100;
+      return Math.min(2.5, Math.max(1, next));
+    });
   };
 
-  return (
-    <div className="min-h-screen bg-black flex flex-col relative text-foreground">
-      {/* Clean Production Viewer Bar */}
-      <div className="h-14 border-b border-white/10 bg-black/80 backdrop-blur-md px-4 flex items-center justify-between z-20">
-        <div className="flex items-center gap-3">
-          <Button
-            variant="ghost"
-            size="sm"
+  if (kicked) {
+    return (
+      <div className="min-h-screen bg-[#09090b] text-zinc-100 flex items-center justify-center p-6">
+        <div className="max-w-sm w-full p-6 rounded-2xl bg-zinc-900 border border-white/10 text-center space-y-4">
+          <h2 className="text-base font-bold text-zinc-100">เซสชันสิ้นสุดลง</h2>
+          <p className="text-xs text-zinc-400">ผู้สอนได้นำคุณออกจากห้องเรียนนี้แล้ว</p>
+          <button
             onClick={() => router.push("/")}
-            className="text-xs h-8 px-2 text-neutral-400 hover:text-white"
+            className="w-full py-2.5 rounded-xl bg-amber-500 text-zinc-950 font-semibold text-xs"
           >
-            <ArrowLeft className="h-3.5 w-3.5 mr-1" />
-            ออก
-          </Button>
-
-          <div className="h-4 w-px bg-white/10" />
-
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-sm text-white">{roomName}</span>
-            <Badge
-              variant={isLive ? "live" : "secondary"}
-              dot
-              pulse={isLive}
-              className="font-mono text-xs uppercase"
-            >
-              {roomCode}
-            </Badge>
-          </div>
-        </div>
-
-        {/* Minimal Viewer Controls */}
-        <div className="flex items-center gap-2">
-          {isLive && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={toggleMute}
-              className="text-xs h-8 px-2 text-white hover:bg-white/10"
-              title={isMuted ? "เปิดเสียง" : "ปิดเสียง"}
-            >
-              {isMuted ? (
-                <VolumeX className="h-4 w-4 text-rose-400" />
-              ) : (
-                <Volume2 className="h-4 w-4 text-emerald-400" />
-              )}
-            </Button>
-          )}
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={toggleFullscreen}
-            className="text-xs h-8 px-2.5 border-white/20 text-white hover:bg-white/10"
-            title="เต็มจอ"
-          >
-            {isFullscreen ? (
-              <Minimize2 className="h-4 w-4" />
-            ) : (
-              <Maximize2 className="h-4 w-4" />
-            )}
-          </Button>
+            กลับหน้าหลัก
+          </button>
         </div>
       </div>
+    );
+  }
 
-      {/* Cinematic Video Player Container */}
-      <main
-        ref={containerRef}
-        className="flex-1 w-full h-full flex items-center justify-center relative bg-black overflow-hidden"
-      >
+  const hasVideoStream = Boolean(inboundStream && status === RoomStatus.LIVE);
+
+  return (
+    <div
+      ref={containerRef}
+      className="h-screen bg-[#09090b] text-zinc-100 flex flex-col overflow-hidden select-none"
+    >
+      {/* Top Sleek Viewer Bar */}
+      <header className="h-13 border-b border-white/[0.08] bg-zinc-950/90 backdrop-blur-md px-4 flex items-center justify-between shrink-0 z-20">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <button
+            onClick={() => router.push("/")}
+            className="h-8 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.08] text-zinc-400 hover:text-zinc-100 flex items-center gap-1.5 text-xs font-medium transition-colors"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">ออก</span>
+          </button>
+
+          <span className="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[11px] font-medium shrink-0">
+            {subject}
+          </span>
+
+          <h1 className="font-semibold text-sm text-zinc-100 truncate">
+            {roomName}
+          </h1>
+
+          <span className="hidden sm:inline-block px-2 py-0.5 rounded-md bg-zinc-900 border border-white/[0.07] font-mono text-xs text-zinc-400">
+            {formatRoomCode(roomCode)}
+          </span>
+        </div>
+
+        {/* Right Telemetry + Student Controls */}
+        <div className="flex items-center gap-1.5">
+          {hasVideoStream && (
+            <div className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded-lg bg-zinc-900 border border-white/[0.07] text-[11px] font-mono text-zinc-300 mr-1">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span>
+                {metrics.width}×{metrics.height}
+              </span>
+              <span className="text-zinc-600">•</span>
+              <span>{metrics.frameRate}fps</span>
+              <span className="text-zinc-600">•</span>
+              <span className="text-amber-400">{metrics.rttMs}ms</span>
+            </div>
+          )}
+
+          {/* Zoom Controls */}
+          {hasVideoStream && (
+            <div className="hidden sm:flex items-center bg-zinc-900 border border-white/[0.08] rounded-lg p-0.5">
+              <button
+                onClick={() => cycleZoom(-0.25)}
+                disabled={zoomLevel <= 1}
+                className="p-1.5 text-zinc-400 hover:text-zinc-100 disabled:opacity-30"
+                title="ซูมออก"
+              >
+                <ZoomOut className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => setZoomLevel(1)}
+                className="px-1.5 text-[11px] font-mono text-zinc-300"
+                title="รีเซ็ตซูม"
+              >
+                {Math.round(zoomLevel * 100)}%
+              </button>
+              <button
+                onClick={() => cycleZoom(0.25)}
+                disabled={zoomLevel >= 2.5}
+                className="p-1.5 text-zinc-400 hover:text-zinc-100 disabled:opacity-30"
+                title="ซูมเข้าดูรายละเอียด"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* Fit / Fill Toggle */}
+          {hasVideoStream && (
+            <button
+              onClick={() =>
+                setFitMode((m) => (m === "contain" ? "cover" : "contain"))
+              }
+              className="hidden md:flex h-8 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.08] items-center gap-1 text-xs text-zinc-300"
+              title="สลับสัดส่วนภาพ"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+              <span>{fitMode === "contain" ? "พอดีจอ" : "เต็มจอ"}</span>
+            </button>
+          )}
+
+          {/* Save Slide Snapshot */}
+          {hasVideoStream && (
+            <button
+              onClick={handleSnapshot}
+              className="h-8 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.08] flex items-center gap-1.5 text-xs text-zinc-200 transition-colors"
+              title="บันทึกภาพสไลด์ปัจจุบัน (PNG)"
+            >
+              {snapshotSaved ? (
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+              ) : (
+                <Camera className="w-3.5 h-3.5 text-amber-400" />
+              )}
+              <span className="hidden sm:inline">
+                {snapshotSaved ? "บันทึกแล้ว" : "แคปสไลด์"}
+              </span>
+            </button>
+          )}
+
+          {/* Reconnect / Refresh Stream */}
+          <button
+            onClick={handleReconnect}
+            className="h-8 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.08] flex items-center gap-1.5 text-xs text-zinc-300 transition-colors"
+            title="รีเฟรชสัญญาณภาพใหม่"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${reconnecting ? "animate-spin text-amber-400" : ""}`}
+            />
+            <span className="hidden lg:inline">รีเฟรช</span>
+          </button>
+
+          {/* Audio Mute/Unmute */}
+          <button
+            onClick={handleToggleMute}
+            className={`h-8 px-2.5 rounded-lg border flex items-center gap-1.5 text-xs font-medium transition-colors ${
+              isMuted
+                ? "bg-zinc-900 border-white/[0.08] text-zinc-400"
+                : "bg-emerald-500/15 border-emerald-500/30 text-emerald-300"
+            }`}
+          >
+            {isMuted ? (
+              <VolumeX className="w-3.5 h-3.5" />
+            ) : (
+              <Volume2 className="w-3.5 h-3.5" />
+            )}
+            <span className="hidden sm:inline">
+              {isMuted ? "ปิดเสียง" : "เปิดเสียง"}
+            </span>
+          </button>
+
+          {/* Fullscreen */}
+          <button
+            onClick={handleFullscreen}
+            className="h-8 w-8 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.08] flex items-center justify-center text-zinc-300"
+            title="ขยายเต็มหน้าจอ"
+          >
+            {isFullscreen ? (
+              <Minimize2 className="w-3.5 h-3.5" />
+            ) : (
+              <Maximize2 className="w-3.5 h-3.5" />
+            )}
+          </button>
+        </div>
+      </header>
+
+      {/* Main Video Stage */}
+      <div className="flex-1 relative bg-black flex items-center justify-center overflow-auto">
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted={isMuted}
-          className={`w-full h-full object-contain max-h-[calc(100vh-3.5rem)] ${
-            isLive ? "block" : "hidden"
+          style={{
+            transform: `scale(${zoomLevel})`,
+            transformOrigin: "center center"
+          }}
+          className={`w-full h-full transition-transform duration-150 ${
+            fitMode === "contain" ? "object-contain" : "object-cover"
+          } ${
+            hasVideoStream && !settings.isPaused ? "opacity-100" : "opacity-0 pointer-events-none"
           }`}
         />
 
-        {/* Clean Waiting Screen */}
-        {!isLive && (
-          <div className="text-center p-8 flex flex-col items-center max-w-md">
-            <div className="h-16 w-16 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-primary mb-4">
-              <Radio className="h-8 w-8 animate-pulse text-primary" />
-            </div>
-            <h3 className="font-bold text-white text-xl mb-1.5">
-              กำลังรอผู้สอนเริ่มแชร์หน้าจอ...
-            </h3>
-            <p className="text-xs text-neutral-400 mb-5 leading-relaxed">
-              ภาพหน้าจอจะแสดงขึ้นบนอุปกรณ์นี้โดยอัตโนมัติทันทีที่ผู้สอนเริ่มกดแชร์หน้าจอ
-            </p>
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 text-xs text-neutral-400 font-mono">
-              <span className="h-2 w-2 rounded-full bg-amber-400 animate-ping" />
-              สถานะ: {statusText}
-            </div>
+        {/* Tap to Unmute Floating Pill on iPad/Mobile */}
+        {hasVideoStream && !settings.isPaused && isMuted && (
+          <button
+            onClick={handleToggleMute}
+            className="absolute top-4 left-4 z-20 px-3.5 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center gap-2 shadow-xl backdrop-blur-md transition-all"
+          >
+            <VolumeX className="w-4 h-4" />
+            <span>แตะเพื่อเปิดเสียงจากผู้สอน</span>
+          </button>
+        )}
+
+        {/* Subtle Corner Watermark (Synced with Host Settings) */}
+        {hasVideoStream && settings.watermark?.enabled && (
+          <div
+            style={{ opacity: (settings.watermark.opacity || 75) / 100 }}
+            className={`absolute ${
+              POSITION_CLASSES[settings.watermark.position || "bottom-right"]
+            } pointer-events-none z-10 flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-zinc-950/65 backdrop-blur-md border border-white/10 shadow-lg`}
+          >
+            {settings.watermark.showLogo && (
+              <img
+                src="/scius-logo.png"
+                alt="Watermark"
+                className="w-6 h-6 object-contain rounded-full"
+              />
+            )}
+            {settings.watermark.text && (
+              <span className="text-[11px] font-medium text-zinc-200 tracking-wide">
+                {settings.watermark.text}
+              </span>
+            )}
           </div>
         )}
 
-        {/* Live Indicator Tag */}
-        {isLive && (
-          <div className="absolute top-4 right-4 z-20 pointer-events-none">
-            <Badge variant="live" dot pulse className="shadow-lg">
-              LIVE STREAM
-            </Badge>
+        {/* Host Paused / Freeze Screen State */}
+        {hasVideoStream && settings.isPaused && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/90 backdrop-blur-md p-6 text-center z-10">
+            <div className="w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 mb-4">
+              <Pause className="w-7 h-7" />
+            </div>
+            <h2 className="text-base font-bold text-zinc-100">
+              ผู้สอนพักการแสดงหน้าจอชั่วคราว
+            </h2>
+            <p className="text-xs text-zinc-400 mt-1">
+              ภาพจะกลับมาแสดงอัตโนมัติเมื่อผู้สอนกดเล่นต่อ
+            </p>
           </div>
         )}
-      </main>
+
+        {/* Waiting / Connecting State */}
+        {!hasVideoStream && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-studio-grid p-6 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex items-center justify-center text-amber-400 mb-4">
+              <Radio className="w-7 h-7 animate-pulse" />
+            </div>
+            <h2 className="text-base font-bold text-zinc-100 mb-1">
+              {status === RoomStatus.LIVE
+                ? "กำลังเชื่อมต่อสัญญาณภาพ..."
+                : "กำลังรอผู้สอนเริ่มแชร์หน้าจอ"}
+            </h2>
+            <p className="text-xs text-zinc-400 max-w-xs leading-relaxed mb-5">
+              {status === RoomStatus.LIVE
+                ? `สถานะ WebRTC: ${peerState} — ภาพจะปรากฏขึ้นโดยอัตโนมัติ`
+                : "เมื่อผู้สอนกดเริ่มแชร์หน้าจอ ภาพสไลด์จะแสดงขึ้นมาทันทีโดยไม่ต้องรีเฟรชหน้าเว็บ"}
+            </p>
+            {status === RoomStatus.LIVE && (
+              <button
+                onClick={handleReconnect}
+                className="px-4 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-xs font-medium text-zinc-200 inline-flex items-center gap-2 transition-colors"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${reconnecting ? "animate-spin" : ""}`} />
+                <span>ขอสัญญาณภาพใหม่</span>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

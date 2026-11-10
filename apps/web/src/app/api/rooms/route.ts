@@ -1,34 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
-import { CreateRoomSchema } from "@kshare/validators";
 import { generateRoomCode } from "@kshare/protocol";
-import { RoomStore } from "@/lib/room-store";
+import { RoomStore, RoomHostSettings } from "@/lib/room-store";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const parsed = CreateRoomSchema.safeParse(body);
+    const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "ห้องเรียนแชร์หน้าจอ";
+    const subject = typeof body.subject === "string" && body.subject.trim() ? body.subject.trim() : "ทั่วไป";
+    const customCode = typeof body.customCode === "string" ? body.customCode.trim().toUpperCase() : "";
+    const initialSettings = (body.settings || {}) as Partial<RoomHostSettings>;
 
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: "ข้อมูลไม่ถูกต้อง", details: parsed.error.flatten() },
-        { status: 400 }
-      );
-    }
+    const roomCode = customCode && customCode.length >= 4 ? customCode : generateRoomCode();
 
-    const { name, customCode } = parsed.data;
-    const roomCode = customCode && customCode.trim() !== "" ? customCode.trim() : generateRoomCode();
-
-    // Check if room code already exists
     if (RoomStore.findByCode(roomCode)) {
       return NextResponse.json(
-        { error: `รหัสห้อง ${roomCode} มีการใช้งานอยู่แล้ว กรุณาลองรหัสอื่น` },
+        { error: `รหัสห้อง ${roomCode} มีการใช้งานอยู่แล้ว กรุณาใช้รหัสอื่น` },
         { status: 409 }
       );
     }
 
     const room = RoomStore.create({
       code: roomCode,
-      name
+      name,
+      subject,
+      initialSettings
     });
 
     const origin = req.nextUrl.origin;
@@ -40,7 +35,9 @@ export async function POST(req: NextRequest) {
         id: room.id,
         code: room.code,
         name: room.name,
+        subject: room.subject,
         status: room.status,
+        settings: room.settings,
         createdAt: room.createdAt,
         inviteUrl
       },
@@ -54,14 +51,21 @@ export async function POST(req: NextRequest) {
 
 export async function GET() {
   try {
-    const allRooms = RoomStore.getAll().slice(0, 20).map((r) => ({
-      id: r.id,
-      code: r.code,
-      name: r.name,
-      status: r.status,
-      activeViewersCount: r.activeViewersCount,
-      createdAt: r.createdAt
-    }));
+    const allRooms = RoomStore.getAll()
+      .slice(0, 20)
+      .map((r) => ({
+        id: r.id,
+        code: r.code,
+        name: r.name,
+        subject: r.subject,
+        status: r.status,
+        isLocked: r.settings.isLocked,
+        hasPin: Boolean(r.settings.pinCode),
+        resolution: r.settings.resolution,
+        frameRate: r.settings.frameRate,
+        activeViewersCount: r.activeViewersCount,
+        createdAt: r.createdAt
+      }));
 
     return NextResponse.json({ rooms: allRooms });
   } catch (error) {

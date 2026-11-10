@@ -1,7 +1,9 @@
 export enum RoomStatus {
   IDLE = "IDLE",
   WAITING = "WAITING",
+  PREPARING = "PREPARING",
   ACTIVE = "ACTIVE",
+  LIVE = "LIVE",
   CLOSED = "CLOSED"
 }
 

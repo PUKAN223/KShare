@@ -1,3 +1,5 @@
+import { PeerSignalSlot } from "@/app/api/rooms/[code]/signal/route";
+
 export const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
@@ -14,34 +16,156 @@ export const ICE_SERVERS: RTCIceServer[] = [
   }
 ];
 
+export interface LiveStreamMetrics {
+  bitrateKbps: number;
+  frameRate: number;
+  width: number;
+  height: number;
+  rttMs: number;
+  connectedPeers: number;
+  transportMode: "P2P Direct" | "TURN Relay";
+}
+
+export interface HostEncodingOptions {
+  maxBitrateKbps: number;
+  degradationPreference: "maintain-resolution" | "maintain-framerate" | "balanced";
+}
+
+interface HostPeerInstance {
+  viewerId: string;
+  sessionEpoch: number;
+  pc: RTCPeerConnection;
+  hasAnswered: boolean;
+  addedCandidateIndices: number;
+}
+
 export class WebRTCHostPeer {
-  private pc: RTCPeerConnection | null = null;
   private roomCode: string;
   private stream: MediaStream;
+  private peers: Map<string, HostPeerInstance> = new Map();
   private pollTimer: NodeJS.Timeout | null = null;
-  private hasAnswered = false;
-  private onStateChangeCb?: (state: string) => void;
+  private statsTimer: NodeJS.Timeout | null = null;
+  private lastBytesSent = 0;
+  private lastStatsTimestamp = 0;
+  private encodingOptions: HostEncodingOptions = {
+    maxBitrateKbps: 6000,
+    degradationPreference: "maintain-resolution"
+  };
+  private onStateChangeCb?: (state: string, connectedCount: number) => void;
+  private onMetricsCb?: (metrics: LiveStreamMetrics) => void;
 
   constructor(
     roomCode: string,
     stream: MediaStream,
-    onStateChange?: (state: string) => void
+    onStateChange?: (state: string, connectedCount: number) => void,
+    onMetrics?: (metrics: LiveStreamMetrics) => void,
+    initialEncoding?: Partial<HostEncodingOptions>
   ) {
     this.roomCode = roomCode;
     this.stream = stream;
     this.onStateChangeCb = onStateChange;
+    this.onMetricsCb = onMetrics;
+    if (initialEncoding) {
+      this.encodingOptions = { ...this.encodingOptions, ...initialEncoding };
+    }
   }
 
   public async start(): Promise<void> {
-    this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    // Notify signaling server that host broadcast is starting
+    await fetch(`/api/rooms/${this.roomCode}/signal`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        role: "host",
+        type: "broadcast-start"
+      })
+    }).catch(() => {});
 
-    this.pc.oniceconnectionstatechange = () => {
-      const state = this.pc?.iceConnectionState || "unknown";
-      this.onStateChangeCb?.(state);
+    // Pre-create default slot offer for instant first viewer
+    await this.createOfferForViewer("default", 1);
+
+    this.startPolling();
+    this.startStatsLoop();
+  }
+
+  public async updateEncodingParameters(options: Partial<HostEncodingOptions>): Promise<void> {
+    this.encodingOptions = { ...this.encodingOptions, ...options };
+
+    for (const instance of this.peers.values()) {
+      await this.applySenderParameters(instance.pc);
+    }
+  }
+
+  private async applySenderParameters(pc: RTCPeerConnection): Promise<void> {
+    const senders = pc.getSenders();
+    for (const sender of senders) {
+      if (sender.track?.kind === "video") {
+        try {
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          params.encodings[0].maxBitrate = this.encodingOptions.maxBitrateKbps * 1000;
+          params.degradationPreference = this.encodingOptions.degradationPreference;
+          await sender.setParameters(params);
+        } catch {
+          // ignore if browser doesn't support live parameter mutation
+        }
+      }
+    }
+  }
+
+  public async syncStreamTracks(stream: MediaStream): Promise<void> {
+    this.stream = stream;
+    const videoTrack = stream.getVideoTracks()[0] || null;
+    const audioTrack = stream.getAudioTracks()[0] || null;
+
+    for (const instance of this.peers.values()) {
+      const senders = instance.pc.getSenders();
+      const videoSender = senders.find((s) => s.track?.kind === "video");
+      const audioSender = senders.find((s) => s.track?.kind === "audio");
+
+      if (videoSender && videoTrack) {
+        await videoSender.replaceTrack(videoTrack).catch(() => {});
+      }
+      if (audioSender && audioTrack) {
+        await audioSender.replaceTrack(audioTrack).catch(() => {});
+      } else if (!audioSender && audioTrack) {
+        try {
+          instance.pc.addTrack(audioTrack, stream);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  private async createOfferForViewer(viewerId: string, sessionEpoch: number): Promise<void> {
+    const existing = this.peers.get(viewerId);
+    if (existing) {
+      try {
+        existing.pc.close();
+      } catch {
+        // ignore
+      }
+      this.peers.delete(viewerId);
+    }
+
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const instance: HostPeerInstance = {
+      viewerId,
+      sessionEpoch,
+      pc,
+      hasAnswered: false,
+      addedCandidateIndices: 0
+    };
+    this.peers.set(viewerId, instance);
+
+    pc.oniceconnectionstatechange = () => {
+      this.notifyAggregateState();
     };
 
-    // Send candidates to signaling server
-    this.pc.onicecandidate = async (event) => {
+    pc.onicecandidate = async (event) => {
       if (event.candidate) {
         try {
           await fetch(`/api/rooms/${this.roomCode}/signal`, {
@@ -49,6 +173,7 @@ export class WebRTCHostPeer {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               role: "host",
+              viewerId,
               candidate: event.candidate.toJSON()
             })
           });
@@ -58,74 +183,166 @@ export class WebRTCHostPeer {
       }
     };
 
-    // Add screen stream tracks
     this.stream.getTracks().forEach((track) => {
-      if (this.pc) {
-        this.pc.addTrack(track, this.stream);
-      }
+      pc.addTrack(track, this.stream);
     });
 
-    // Create & post offer
-    const offer = await this.pc.createOffer({
+    await this.applySenderParameters(pc);
+
+    const offer = await pc.createOffer({
       offerToReceiveAudio: false,
       offerToReceiveVideo: false
     });
-    await this.pc.setLocalDescription(offer);
+    await pc.setLocalDescription(offer);
 
     await fetch(`/api/rooms/${this.roomCode}/signal`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         role: "host",
+        viewerId,
         type: "offer",
         sdp: { type: offer.type, sdp: offer.sdp }
       })
     });
-
-    // Start polling for Viewer Answer
-    this.pollForAnswer();
   }
 
-  private pollForAnswer(): void {
+  private notifyAggregateState(): void {
+    let connectedCount = 0;
+    let latestState = "waiting";
+    for (const inst of this.peers.values()) {
+      const st = inst.pc.iceConnectionState;
+      if (st === "connected" || st === "completed") {
+        connectedCount++;
+        latestState = "connected";
+      } else if (st === "checking" && latestState !== "connected") {
+        latestState = "connecting";
+      } else if (st === "disconnected" && latestState !== "connected") {
+        latestState = "disconnected";
+      }
+    }
+    this.onStateChangeCb?.(latestState, connectedCount);
+  }
+
+  private startPolling(): void {
     if (this.pollTimer) clearInterval(this.pollTimer);
 
     this.pollTimer = setInterval(async () => {
-      if (!this.pc) return;
-
       try {
-        const res = await fetch(`/api/rooms/${this.roomCode}/signal`);
+        const res = await fetch(`/api/rooms/${this.roomCode}/signal?role=host`);
         if (!res.ok) return;
         const data = await res.json();
+        const slots = (data.slots || {}) as Record<string, PeerSignalSlot>;
 
-        // If answer exists and not yet applied
-        if (data.answer && !this.hasAnswered) {
-          this.hasAnswered = true;
-          await this.pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        for (const [viewerId, slot] of Object.entries(slots)) {
+          const existing = this.peers.get(viewerId);
 
-          // Apply viewer ICE candidates
-          if (Array.isArray(data.viewerCandidates)) {
-            for (const cand of data.viewerCandidates) {
+          // If viewer requested a fresh offer or epoch changed
+          if (slot.needsOffer || !existing || existing.sessionEpoch !== slot.sessionEpoch) {
+            await this.createOfferForViewer(viewerId, slot.sessionEpoch);
+            continue;
+          }
+
+          // If viewer posted an answer
+          if (slot.answer && !existing.hasAnswered) {
+            existing.hasAnswered = true;
+            try {
+              await existing.pc.setRemoteDescription(new RTCSessionDescription(slot.answer));
+            } catch {
+              // ignore
+            }
+          }
+
+          // Add any new viewer ICE candidates
+          if (
+            existing.hasAnswered &&
+            Array.isArray(slot.viewerCandidates) &&
+            slot.viewerCandidates.length > existing.addedCandidateIndices
+          ) {
+            const newCands = slot.viewerCandidates.slice(existing.addedCandidateIndices);
+            existing.addedCandidateIndices = slot.viewerCandidates.length;
+            for (const cand of newCands) {
               try {
-                await this.pc.addIceCandidate(new RTCIceCandidate(cand));
+                await existing.pc.addIceCandidate(new RTCIceCandidate(cand));
               } catch {
                 // ignore
               }
-            }
-          }
-        } else if (data.answer && this.hasAnswered && Array.isArray(data.viewerCandidates)) {
-          // Continue adding any late viewer candidates
-          for (const cand of data.viewerCandidates) {
-            try {
-              await this.pc.addIceCandidate(new RTCIceCandidate(cand));
-            } catch {
-              // ignore
             }
           }
         }
       } catch {
         // ignore
       }
-    }, 1000);
+    }, 850);
+  }
+
+  private startStatsLoop(): void {
+    if (this.statsTimer) clearInterval(this.statsTimer);
+
+    this.statsTimer = setInterval(async () => {
+      const videoTrack = this.stream.getVideoTracks()[0];
+      const trackSettings = videoTrack?.getSettings();
+      let connectedPeers = 0;
+      let activePc: RTCPeerConnection | null = null;
+
+      for (const inst of this.peers.values()) {
+        if (inst.pc.iceConnectionState === "connected" || inst.pc.iceConnectionState === "completed") {
+          connectedPeers++;
+          if (!activePc) activePc = inst.pc;
+        }
+      }
+
+      let bitrateKbps = 0;
+      let rttMs = 14;
+      let frameRate = Math.round(trackSettings?.frameRate || 60);
+      let width = trackSettings?.width || 1920;
+      let height = trackSettings?.height || 1080;
+      let transportMode: "P2P Direct" | "TURN Relay" = "P2P Direct";
+
+      if (activePc) {
+        try {
+          const report = await activePc.getStats();
+          report.forEach((stat) => {
+            if (stat.type === "outbound-rtp" && stat.kind === "video") {
+              const now = stat.timestamp;
+              const bytes = stat.bytesSent || 0;
+              if (this.lastStatsTimestamp > 0 && now > this.lastStatsTimestamp) {
+                const deltaBytes = bytes - this.lastBytesSent;
+                const deltaSec = (now - this.lastStatsTimestamp) / 1000;
+                if (deltaBytes >= 0 && deltaSec > 0) {
+                  bitrateKbps = Math.round((deltaBytes * 8) / 1000 / deltaSec);
+                }
+              }
+              this.lastBytesSent = bytes;
+              this.lastStatsTimestamp = now;
+              if (stat.framesPerSecond) frameRate = Math.round(stat.framesPerSecond);
+              if (stat.frameWidth) width = stat.frameWidth;
+              if (stat.frameHeight) height = stat.frameHeight;
+            }
+            if (stat.type === "candidate-pair" && stat.state === "succeeded") {
+              if (typeof stat.currentRoundTripTime === "number") {
+                rttMs = Math.max(1, Math.round(stat.currentRoundTripTime * 1000));
+              }
+            }
+            if (stat.type === "local-candidate" && stat.candidateType === "relay") {
+              transportMode = "TURN Relay";
+            }
+          });
+        } catch {
+          // ignore
+        }
+      }
+
+      this.onMetricsCb?.({
+        bitrateKbps,
+        frameRate,
+        width,
+        height,
+        rttMs,
+        connectedPeers,
+        transportMode
+      });
+    }, 1500);
   }
 
   public close(): void {
@@ -133,16 +350,19 @@ export class WebRTCHostPeer {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
-    if (this.pc) {
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
+    for (const inst of this.peers.values()) {
       try {
-        this.pc.close();
+        inst.pc.close();
       } catch {
         // ignore
       }
-      this.pc = null;
     }
+    this.peers.clear();
 
-    // Reset signal on server
     fetch(`/api/rooms/${this.roomCode}/signal`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -154,23 +374,53 @@ export class WebRTCHostPeer {
 export class WebRTCViewerPeer {
   private pc: RTCPeerConnection | null = null;
   private roomCode: string;
+  public readonly viewerId: string;
   private onStreamCb: (stream: MediaStream) => void;
   private onStateChangeCb?: (state: string) => void;
+  private onMetricsCb?: (metrics: LiveStreamMetrics) => void;
   private pollTimer: NodeJS.Timeout | null = null;
-  private hasProcessedOffer = false;
+  private statsTimer: NodeJS.Timeout | null = null;
+  private processedEpoch = 0;
+  private addedHostCandidates = 0;
+  private lastBytesReceived = 0;
+  private lastStatsTimestamp = 0;
 
   constructor(
     roomCode: string,
+    viewerId: string,
     onStream: (stream: MediaStream) => void,
-    onStateChange?: (state: string) => void
+    onStateChange?: (state: string) => void,
+    onMetrics?: (metrics: LiveStreamMetrics) => void
   ) {
     this.roomCode = roomCode;
+    this.viewerId = viewerId;
     this.onStreamCb = onStream;
     this.onStateChangeCb = onStateChange;
+    this.onMetricsCb = onMetrics;
   }
 
-  public start(): void {
+  public async start(): Promise<void> {
+    await this.requestFreshOffer();
     this.pollForOffer();
+    this.startStatsLoop();
+  }
+
+  public async requestFreshOffer(): Promise<void> {
+    this.processedEpoch = 0;
+    this.addedHostCandidates = 0;
+    try {
+      await fetch(`/api/rooms/${this.roomCode}/signal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role: "viewer",
+          viewerId: this.viewerId,
+          type: "request-offer"
+        })
+      });
+    } catch {
+      // ignore
+    }
   }
 
   private pollForOffer(): void {
@@ -178,27 +428,51 @@ export class WebRTCViewerPeer {
 
     this.pollTimer = setInterval(async () => {
       try {
-        const res = await fetch(`/api/rooms/${this.roomCode}/signal`);
+        const res = await fetch(
+          `/api/rooms/${this.roomCode}/signal?viewerId=${encodeURIComponent(this.viewerId)}`
+        );
         if (!res.ok) return;
         const data = await res.json();
 
-        // When host offer is ready and we haven't answered yet
-        if (data.offer && !this.hasProcessedOffer) {
-          this.hasProcessedOffer = true;
-          await this.handleOffer(data.offer, data.hostCandidates || []);
-        } else if (!data.offer) {
-          // Host stopped sharing or reset
-          this.hasProcessedOffer = false;
+        if (!data.hostActive) {
+          this.processedEpoch = 0;
+          return;
+        }
+
+        if (data.offer && data.sessionEpoch !== this.processedEpoch) {
+          this.processedEpoch = data.sessionEpoch;
+          this.addedHostCandidates = 0;
+          await this.handleOffer(
+            data.offer,
+            data.hostCandidates || [],
+            data.sessionEpoch
+          );
+        } else if (
+          this.pc &&
+          this.processedEpoch === data.sessionEpoch &&
+          Array.isArray(data.hostCandidates) &&
+          data.hostCandidates.length > this.addedHostCandidates
+        ) {
+          const newCands = data.hostCandidates.slice(this.addedHostCandidates);
+          this.addedHostCandidates = data.hostCandidates.length;
+          for (const cand of newCands) {
+            try {
+              await this.pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch {
+              // ignore
+            }
+          }
         }
       } catch {
         // ignore
       }
-    }, 1200);
+    }, 900);
   }
 
   private async handleOffer(
     offer: RTCSessionDescriptionInit,
-    hostCandidates: RTCIceCandidateInit[]
+    hostCandidates: RTCIceCandidateInit[],
+    sessionEpoch: number
   ): Promise<void> {
     if (this.pc) {
       try {
@@ -215,14 +489,15 @@ export class WebRTCViewerPeer {
       this.onStateChangeCb?.(state);
     };
 
-    // When remote stream arrives, forward to callback immediately!
     this.pc.ontrack = (event) => {
       if (event.streams && event.streams[0]) {
         this.onStreamCb(event.streams[0]);
+      } else if (event.track) {
+        const inboundStream = new MediaStream([event.track]);
+        this.onStreamCb(inboundStream);
       }
     };
 
-    // Forward viewer candidates to host via signaling
     this.pc.onicecandidate = async (event) => {
       if (event.candidate) {
         try {
@@ -231,6 +506,7 @@ export class WebRTCViewerPeer {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               role: "viewer",
+              viewerId: this.viewerId,
               candidate: event.candidate.toJSON()
             })
           });
@@ -242,7 +518,7 @@ export class WebRTCViewerPeer {
 
     await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
 
-    // Add any existing host candidates
+    this.addedHostCandidates = hostCandidates.length;
     for (const cand of hostCandidates) {
       try {
         await this.pc.addIceCandidate(new RTCIceCandidate(cand));
@@ -251,7 +527,6 @@ export class WebRTCViewerPeer {
       }
     }
 
-    // Create & post Answer
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);
 
@@ -260,16 +535,81 @@ export class WebRTCViewerPeer {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         role: "viewer",
+        viewerId: this.viewerId,
+        sessionEpoch,
         type: "answer",
         sdp: { type: answer.type, sdp: answer.sdp }
       })
     });
   }
 
+  private startStatsLoop(): void {
+    if (this.statsTimer) clearInterval(this.statsTimer);
+
+    this.statsTimer = setInterval(async () => {
+      if (!this.pc) return;
+      const state = this.pc.iceConnectionState;
+      if (state !== "connected" && state !== "completed") return;
+
+      let bitrateKbps = 0;
+      let frameRate = 60;
+      let width = 1920;
+      let height = 1080;
+      let rttMs = 15;
+      let transportMode: "P2P Direct" | "TURN Relay" = "P2P Direct";
+
+      try {
+        const report = await this.pc.getStats();
+        report.forEach((stat) => {
+          if (stat.type === "inbound-rtp" && stat.kind === "video") {
+            const now = stat.timestamp;
+            const bytes = stat.bytesReceived || 0;
+            if (this.lastStatsTimestamp > 0 && now > this.lastStatsTimestamp) {
+              const deltaBytes = bytes - this.lastBytesReceived;
+              const deltaSec = (now - this.lastStatsTimestamp) / 1000;
+              if (deltaBytes >= 0 && deltaSec > 0) {
+                bitrateKbps = Math.round((deltaBytes * 8) / 1000 / deltaSec);
+              }
+            }
+            this.lastBytesReceived = bytes;
+            this.lastStatsTimestamp = now;
+            if (stat.framesPerSecond) frameRate = Math.round(stat.framesPerSecond);
+            if (stat.frameWidth) width = stat.frameWidth;
+            if (stat.frameHeight) height = stat.frameHeight;
+          }
+          if (stat.type === "candidate-pair" && stat.state === "succeeded") {
+            if (typeof stat.currentRoundTripTime === "number") {
+              rttMs = Math.max(1, Math.round(stat.currentRoundTripTime * 1000));
+            }
+          }
+          if (stat.type === "remote-candidate" && stat.candidateType === "relay") {
+            transportMode = "TURN Relay";
+          }
+        });
+      } catch {
+        // ignore
+      }
+
+      this.onMetricsCb?.({
+        bitrateKbps,
+        frameRate,
+        width,
+        height,
+        rttMs,
+        connectedPeers: 1,
+        transportMode
+      });
+    }, 1500);
+  }
+
   public close(): void {
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
+    }
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
     }
     if (this.pc) {
       try {

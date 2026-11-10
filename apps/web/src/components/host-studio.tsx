@@ -1,779 +1,1229 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import Image from "next/image";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Button, Card, Badge, Input } from "@kshare/ui";
+import { captureManager } from "@kshare/capture";
+import { RoomStatus, formatRoomCode } from "@kshare/protocol";
+import { QRCodeSVG } from "qrcode.react";
+import { WebRTCHostPeer, LiveStreamMetrics } from "@/lib/webrtc-peer";
 import {
-  MonitorPlay,
+  RoomHostSettings,
+  ViewerParticipant,
+  WatermarkPosition,
+  getDefaultRoomSettings
+} from "@/lib/room-store";
+import {
+  Monitor,
+  Mic,
+  MicOff,
+  Volume2,
+  VolumeX,
   StopCircle,
   Copy,
   Check,
   Users,
+  Sliders,
   QrCode,
+  RefreshCw,
   ArrowLeft,
-  Volume2,
-  VolumeX,
-  Radio,
-  Settings,
-  Mic,
-  MicOff,
+  X,
   Lock,
   Unlock,
+  Pause,
+  Play,
+  Stamp,
+  UserX,
   Shield,
-  Sliders,
+  Gauge,
   Sparkles,
-  Wifi,
-  Tv,
-  Eye,
-  RefreshCw
+  Tv
 } from "lucide-react";
-import { ScreenCaptureManager, CaptureMetadata } from "@kshare/capture";
-import { WebRTCHostPeer } from "@/lib/webrtc-peer";
-import { RoomStatus } from "@kshare/protocol";
-import { QRCodeSVG } from "qrcode.react";
-import { toast } from "sonner";
 
 interface HostStudioProps {
   roomCode: string;
-  initialRoomName: string;
+  roomName: string;
+  subject?: string;
   hostToken: string;
+  initialSettings?: RoomHostSettings;
 }
+
+const POSITION_CLASSES: Record<WatermarkPosition, string> = {
+  "bottom-right": "bottom-4 right-4",
+  "bottom-left": "bottom-4 left-4",
+  "top-right": "top-4 right-4",
+  "top-left": "top-4 left-4"
+};
 
 export function HostStudio({
   roomCode,
-  initialRoomName,
-  hostToken
+  roomName,
+  subject = "ทั่วไป",
+  hostToken,
+  initialSettings
 }: HostStudioProps) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
-  const captureManagerRef = useRef<ScreenCaptureManager | null>(null);
   const peerRef = useRef<WebRTCHostPeer | null>(null);
 
-  // Stream States
-  const [isSharing, setIsSharing] = useState(false);
-  const [statusText, setStatusText] = useState("พร้อมสำหรับการแชร์หน้าจอ");
-  const [metadata, setMetadata] = useState<CaptureMetadata | null>(null);
-  const [viewersCount, setViewersCount] = useState(0);
+  const [status, setStatus] = useState<RoomStatus>(RoomStatus.IDLE);
+  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [settings, setSettings] = useState<RoomHostSettings>(
+    () => initialSettings || getDefaultRoomSettings(roomCode)
+  );
+  const [participants, setParticipants] = useState<ViewerParticipant[]>([]);
 
-  // Settings: Video & Quality
-  const [resolution, setResolution] = useState<"720p" | "1080p" | "1440p" | "4k">("1080p");
-  const [frameRate, setFrameRate] = useState<number>(60);
-  const [contentHint, setContentHint] = useState<"detail" | "motion">("detail");
-
-  // Settings: Audio & Mic
+  // Media toggles & devices
+  const [micEnabled, setMicEnabled] = useState(false);
   const [systemAudio, setSystemAudio] = useState(true);
-  const [micAudio, setMicAudio] = useState(false);
-  const [noiseSuppression, setNoiseSuppression] = useState(true);
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicId, setSelectedMicId] = useState<string>("");
 
-  // Settings: Security & Classroom
-  const [isRoomLocked, setIsRoomLocked] = useState(false);
-  const [roomPin, setRoomPin] = useState("");
-  const [showWatermark, setShowWatermark] = useState(true);
-  const [centerName, setCenterName] = useState("ศูนย์มหาวิทยาลัยกำกับดูแล");
-
-  // Modals & Panels
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  // Sidebar & UI state
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [activeTab, setActiveTab] = useState<"settings" | "viewers">("settings");
   const [showInviteModal, setShowInviteModal] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [lanIp, setLanIp] = useState<string>("");
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Live WebRTC telemetry
+  const [peerState, setPeerState] = useState<string>("waiting");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [metrics, setMetrics] = useState<LiveStreamMetrics>({
+    bitrateKbps: 0,
+    frameRate: settings.frameRate,
+    width: 1920,
+    height: 1080,
+    rttMs: 12,
+    connectedPeers: 0,
+    transportMode: "P2P Direct"
+  });
 
   useEffect(() => {
-    fetch("/api/network-ip")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.ip && data.ip !== "localhost") {
-          setLanIp(data.ip);
-        }
-      })
-      .catch(() => {});
+    if (typeof window !== "undefined") {
+      setShareUrl(`${window.location.origin}/room/${roomCode}`);
+    }
+  }, [roomCode]);
 
-    // Polling room metadata to track viewers
-    const interval = setInterval(async () => {
+  // Enumerate microphone devices
+  useEffect(() => {
+    if (typeof navigator !== "undefined" && navigator.mediaDevices?.enumerateDevices) {
+      navigator.mediaDevices
+        .enumerateDevices()
+        .then((devices) => {
+          const mics = devices.filter((d) => d.kind === "audioinput");
+          setAudioDevices(mics);
+          if (mics.length > 0 && !selectedMicId) {
+            setSelectedMicId(mics[0].deviceId);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [selectedMicId]);
+
+  // Poll room state & connected participants
+  useEffect(() => {
+    const syncRoom = async () => {
       try {
         const res = await fetch(`/api/rooms/${roomCode}`);
         if (res.ok) {
           const data = await res.json();
-          if (data.room) {
-            setViewersCount(data.room.activeViewersCount || 0);
+          if (Array.isArray(data. room?.participants)) {
+            setParticipants(data.room.participants);
           }
         }
       } catch {
         // ignore
       }
-    }, 4000);
-
-    return () => {
-      clearInterval(interval);
-      if (captureManagerRef.current) {
-        captureManagerRef.current.stopCapture();
-      }
-      if (peerRef.current) {
-        peerRef.current.close();
-      }
     };
+    syncRoom();
+    const timer = setInterval(syncRoom, 3000);
+    return () => clearInterval(timer);
   }, [roomCode]);
 
-  const getInviteUrl = () => {
-    if (typeof window === "undefined") return `https://kshare.app/room/${roomCode}`;
-    const port = window.location.port ? `:${window.location.port}` : "";
-    const protocol = window.location.protocol;
-    if (lanIp && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
-      return `${protocol}//${lanIp}${port}/room/${roomCode}`;
+  // Elapsed broadcast timer
+  useEffect(() => {
+    if (status !== RoomStatus.LIVE) {
+      setElapsedSeconds(0);
+      return;
     }
-    return `${window.location.origin}/room/${roomCode}`;
+    const timer = setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [status]);
+
+  const formatElapsed = (sec: number) => {
+    const m = Math.floor(sec / 60)
+      .toString()
+      .padStart(2, "0");
+    const s = (sec % 60).toString().padStart(2, "0");
+    return `${m}:${s}`;
   };
 
-  const inviteUrl = getInviteUrl();
+  // Persist setting changes to backend & apply live constraints
+  const patchSettings = useCallback(
+    async (partial: Partial<RoomHostSettings>) => {
+      setSettings((prev) => {
+        const next: RoomHostSettings = {
+          ...prev,
+          ...partial,
+          watermark: {
+            ...prev.watermark,
+            ...(partial.watermark || {})
+          }
+        };
 
-  const handleStartShare = async () => {
+        // Apply live video track constraints if resolution/fps/contentHint changed
+        if (
+          partial.resolution !== undefined ||
+          partial.frameRate !== undefined ||
+          partial.contentHint !== undefined
+        ) {
+          captureManager
+            .applyVideoSettings({
+              resolution: next.resolution,
+              frameRate: next.frameRate,
+              contentHint: next.contentHint
+            })
+            .catch(() => {});
+        }
+
+        // Apply live WebRTC RTP sender parameters if bitrate/degradation changed
+        if (
+          partial.maxBitrateKbps !== undefined ||
+          partial.degradationPreference !== undefined
+        ) {
+          peerRef.current
+            ?.updateEncodingParameters({
+              maxBitrateKbps: next.maxBitrateKbps,
+              degradationPreference: next.degradationPreference
+            })
+            .catch(() => {});
+        }
+
+        // Persist to room API
+        fetch(`/api/rooms/${roomCode}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            hostToken,
+            settings: partial
+          })
+        }).catch(() => {});
+
+        return next;
+      });
+    },
+    [roomCode, hostToken]
+  );
+
+  // Attach local preview stream to video element
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      peerRef.current?.close();
+      captureManager.stopCapture();
+    };
+  }, []);
+
+  const handleStartBroadcast = async () => {
+    setErrorMsg(null);
+
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices ||
+      typeof navigator.mediaDevices.getDisplayMedia !== "function"
+    ) {
+      setErrorMsg(
+        "เบราว์เซอร์ต้องรันบน localhost หรือ HTTPS จึงจะแชร์หน้าจอได้ (ผู้ชมบน iPad สามารถเข้าดูผ่าน IP เครื่องโฮสต์ได้ตามปกติ)"
+      );
+      return;
+    }
+
     try {
-      if (!captureManagerRef.current) {
-        captureManagerRef.current = new ScreenCaptureManager();
-      }
+      setStatus(RoomStatus.PREPARING);
 
-      captureManagerRef.current.onEnded(() => {
-        handleStopShare();
-        toast.info("คุณได้หยุดการแชร์หน้าจอจากเบราว์เซอร์");
-      });
-
-      const { stream, metadata: meta } = await captureManagerRef.current.startCapture({
-        frameRate,
-        resolution,
+      const { stream: mediaStream } = await captureManager.startCapture({
+        resolution: settings.resolution,
+        frameRate: settings.frameRate,
         includeAudio: systemAudio,
-        contentHint
+        contentHint: settings.contentHint
       });
 
-      // If teacher microphone is enabled, mix mic track in
-      if (micAudio) {
-        await captureManagerRef.current.addMicrophoneTrack();
+      if (micEnabled) {
+        await captureManager.addMicrophoneTrack({
+          deviceId: selectedMicId || undefined
+        });
       }
 
-      setMetadata(meta);
-      setIsSharing(true);
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play().catch(() => {});
+      const videoTrack = mediaStream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          handleStopBroadcast();
+        };
       }
+
+      setStream(mediaStream);
+      setStatus(RoomStatus.LIVE);
+
+      if (settings.isPaused) {
+        await patchSettings({ isPaused: false });
+      }
+
+      await fetch(`/api/rooms/${roomCode}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hostToken,
+          status: RoomStatus.LIVE,
+          streamId: mediaStream.id
+        })
+      });
 
       if (peerRef.current) {
         peerRef.current.close();
       }
 
-      peerRef.current = new WebRTCHostPeer(roomCode, stream, (iceState) => {
-        if (iceState === "connected" || iceState === "completed") {
-          setStatusText("กำลังส่งสัญญาณสด (P2P Streaming Live)");
-        } else if (iceState === "disconnected") {
-          setStatusText("สัญญาณขาดหาย กำลังเชื่อมต่อใหม่...");
+      const hostPeer = new WebRTCHostPeer(
+        roomCode,
+        mediaStream,
+        (state) => setPeerState(state),
+        (liveMetrics) => setMetrics(liveMetrics),
+        {
+          maxBitrateKbps: settings.maxBitrateKbps,
+          degradationPreference: settings.degradationPreference
         }
-      });
-
-      await peerRef.current.start();
-
-      await fetch(`/api/rooms/${roomCode}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          hostToken,
-          status: RoomStatus.ACTIVE,
-          streamId: `kshare_${roomCode.toLowerCase()}`
-        })
-      });
-
-      toast.success("เริ่มถ่ายทอดสดหน้าจอห้องเรียน วมว. เรียบร้อย");
+      );
+      await hostPeer.start();
+      peerRef.current = hostPeer;
     } catch (err: unknown) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      toast.error(error.message);
+      console.error("Failed to start capture:", err);
+      setStatus(RoomStatus.IDLE);
     }
   };
 
-  const handleStopShare = async () => {
-    if (captureManagerRef.current) {
-      captureManagerRef.current.stopCapture();
-    }
-    if (peerRef.current) {
-      peerRef.current.close();
-      peerRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    setIsSharing(false);
-    setMetadata(null);
-    setStatusText("หยุดการแชร์หน้าจอแล้ว");
+  const handleStopBroadcast = async () => {
+    peerRef.current?.close();
+    peerRef.current = null;
+    captureManager.stopCapture();
+    setStream(null);
+    setStatus(RoomStatus.IDLE);
+    setPeerState("waiting");
 
-    try {
-      await fetch(`/api/rooms/${roomCode}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          hostToken,
-          status: RoomStatus.IDLE
-        })
-      });
-    } catch {
-      // ignore
-    }
-
-    toast.info("หยุดการแชร์หน้าจอแล้ว");
+    await fetch(`/api/rooms/${roomCode}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        hostToken,
+        status: RoomStatus.IDLE
+      })
+    }).catch(() => {});
   };
 
-  const toggleMic = async () => {
-    const nextMic = !micAudio;
-    setMicAudio(nextMic);
-    if (captureManagerRef.current && isSharing) {
-      if (nextMic) {
-        await captureManagerRef.current.addMicrophoneTrack();
-        toast.success("เปิดไมโครโฟนผู้สอนแล้ว");
+  const handleTogglePause = async () => {
+    const nextPaused = !settings.isPaused;
+    captureManager.setVideoPaused(nextPaused);
+    await patchSettings({ isPaused: nextPaused });
+  };
+
+  const handleToggleSystemAudio = () => {
+    const next = !systemAudio;
+    setSystemAudio(next);
+    captureManager.setSystemAudioEnabled(next);
+  };
+
+  const handleToggleMic = async () => {
+    const next = !micEnabled;
+    setMicEnabled(next);
+    if (status === RoomStatus.LIVE) {
+      if (next) {
+        await captureManager.addMicrophoneTrack({
+          deviceId: selectedMicId || undefined
+        });
       } else {
-        captureManagerRef.current.removeMicrophoneTrack();
-        toast.info("ปิดไมโครโฟนผู้สอนแล้ว");
+        captureManager.removeMicrophoneTrack();
+      }
+      const currentStream = captureManager.getCurrentStream();
+      if (currentStream && peerRef.current) {
+        await peerRef.current.syncStreamTracks(currentStream);
       }
     }
   };
 
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(inviteUrl);
-    setCopied(true);
-    toast.success("คัดลอกลิงก์ห้องเรียน วมว. แล้ว");
-    setTimeout(() => setCopied(false), 2000);
+  const handleChangeMicDevice = async (deviceId: string) => {
+    setSelectedMicId(deviceId);
+    if (micEnabled && status === RoomStatus.LIVE) {
+      await captureManager.addMicrophoneTrack({ deviceId });
+      const currentStream = captureManager.getCurrentStream();
+      if (currentStream && peerRef.current) {
+        await peerRef.current.syncStreamTracks(currentStream);
+      }
+    }
   };
 
+  const handleKickViewer = async (viewerId: string) => {
+    await fetch(`/api/rooms/${roomCode}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        hostToken,
+        kickViewerId: viewerId
+      })
+    }).catch(() => {});
+    setParticipants((prev) => prev.filter((p) => p.viewerId !== viewerId));
+  };
+
+  const copyRoomCode = () => {
+    navigator.clipboard.writeText(formatRoomCode(roomCode));
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+  };
+
+  const copyShareLink = () => {
+    navigator.clipboard.writeText(shareUrl);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  const bitrateMbps =
+    metrics.bitrateKbps > 0
+      ? (metrics.bitrateKbps / 1000).toFixed(1)
+      : (settings.maxBitrateKbps / 1000).toFixed(1);
+
   return (
-    <div className="min-h-screen bg-background flex flex-col relative text-foreground">
-      {/* Top Academic Bar */}
-      <div className="h-14 border-b border-primary/20 bg-background/95 backdrop-blur-md px-4 flex items-center justify-between z-20">
-        <div className="flex items-center gap-3">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => router.push("/dashboard")}
-            className="text-xs h-8 px-2 text-muted-foreground hover:text-foreground"
+    <div className="h-screen bg-[#09090b] text-zinc-100 flex flex-col overflow-hidden select-none">
+      {/* Top Broadcast Console Bar */}
+      <header className="h-14 border-b border-white/[0.08] bg-zinc-950/90 backdrop-blur-md px-4 flex items-center justify-between shrink-0 z-20">
+        <div className="flex items-center gap-3 min-w-0">
+          <button
+            onClick={() => {
+              handleStopBroadcast();
+              router.push("/");
+            }}
+            className="h-8 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.08] text-zinc-400 hover:text-zinc-100 flex items-center gap-1.5 text-xs font-medium transition-colors"
+            title="กลับหน้าหลัก"
           >
-            <ArrowLeft className="h-3.5 w-3.5 mr-1" />
-            แดชบอร์ด
-          </Button>
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">ออก</span>
+          </button>
 
-          <div className="h-4 w-px bg-border/60" />
+          <div className="h-4 w-px bg-white/[0.08]" />
 
-          {/* Organization Logo Small */}
-          <div className="flex items-center gap-2">
-            <div className="h-7 w-7 rounded-full overflow-hidden border border-primary/30 p-0.5 bg-black/40 hidden sm:flex items-center justify-center">
-              <Image
-                src="/scius-logo.png"
-                alt="SCiUS Logo"
-                width={24}
-                height={24}
-                className="object-contain"
-              />
-            </div>
-            <span className="font-semibold text-sm tracking-tight">{initialRoomName}</span>
-            <Badge
-              variant={isSharing ? "live" : "secondary"}
-              dot
-              pulse={isSharing}
-              className="font-mono text-xs uppercase"
-            >
-              {roomCode}
-            </Badge>
-            {isRoomLocked && (
-              <Badge variant="destructive" className="text-[10px] py-0 px-1.5 gap-1">
-                <Lock className="h-2.5 w-2.5" /> ล็อกห้อง
-              </Badge>
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[11px] font-medium shrink-0">
+              {subject}
+            </span>
+            <h1 className="font-semibold text-sm text-zinc-100 truncate max-w-[180px] sm:max-w-[260px]">
+              {roomName}
+            </h1>
+          </div>
+
+          <button
+            onClick={copyRoomCode}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.08] text-xs font-mono tracking-wider text-amber-400 transition-colors shrink-0"
+            title="คัดลอกรหัสห้อง"
+          >
+            <span>{formatRoomCode(roomCode)}</span>
+            {copiedCode ? (
+              <Check className="w-3 h-3 text-emerald-400" />
+            ) : (
+              <Copy className="w-3 h-3 text-zinc-500" />
             )}
-          </div>
+          </button>
         </div>
 
-        {/* Viewers & Quick Actions */}
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-secondary/80 border border-border/60 text-xs">
-            <Users className="h-3.5 w-3.5 text-primary" />
-            <span className="font-mono font-medium">{viewersCount}/1</span>
-            <span className="text-muted-foreground hidden sm:inline">นักเรียน</span>
-          </div>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowSettingsModal(true)}
-            className="gap-1.5 text-xs font-medium border-primary/30 hover:border-primary"
-            title="การตั้งค่าห้องและการสตรีม"
-          >
-            <Sliders className="h-3.5 w-3.5 text-primary" />
-            <span className="hidden sm:inline">ตั้งค่าสตรีม</span>
-          </Button>
-
-          <Button
-            variant="default"
-            size="sm"
-            onClick={() => setShowInviteModal(true)}
-            className="gap-1.5 text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90"
-          >
-            <QrCode className="h-3.5 w-3.5" />
-            เชิญนักเรียน
-          </Button>
-        </div>
-      </div>
-
-      {/* Main Studio Viewport */}
-      <main className="flex-1 p-3 sm:p-5 flex flex-col items-center justify-center relative">
-        <div className="w-full max-w-6xl aspect-video rounded-2xl overflow-hidden bg-black border border-primary/20 shadow-2xl relative flex items-center justify-center">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className={`w-full h-full object-contain ${isSharing ? "block" : "hidden"}`}
-          />
-
-          {!isSharing && (
-            <div className="text-center p-6 flex flex-col items-center max-w-md">
-              <div className="h-16 w-16 rounded-full border border-primary/40 bg-primary/10 flex items-center justify-center text-primary mb-4 shadow-lg shadow-primary/10">
-                <MonitorPlay className="h-8 w-8" />
-              </div>
-              <h3 className="font-bold text-foreground text-xl mb-1.5">
-                ห้องเรียนวิทยาศาสตร์ วมว. พร้อมแชร์หน้าจอ
-              </h3>
-              <p className="text-xs sm:text-sm text-muted-foreground mb-6 leading-relaxed">
-                คลิกปุ่ม &quot;เริ่มแชร์หน้าจอ&quot; เพื่อเลือกหน้าต่างสไลด์การสอน การเขียนโค้ด หรือสื่อการเรียนรู้แบบ Real-Time P2P
-              </p>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="default"
-                  size="lg"
-                  onClick={handleStartShare}
-                  className="font-semibold text-sm bg-primary text-primary-foreground hover:bg-primary/90 shadow-lg shadow-primary/25"
-                >
-                  <MonitorPlay className="h-4 w-4 mr-2" />
-                  เริ่มแชร์หน้าจอ ({resolution} • {frameRate}FPS)
-                </Button>
-                <Button
-                  variant="outline"
-                  size="lg"
-                  onClick={() => setShowSettingsModal(true)}
-                  className="text-xs"
-                >
-                  <Sliders className="h-4 w-4 mr-1.5 text-primary" />
-                  ปรับความคมชัด
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* Watermark Overlay (SCiUS Logo & Room Code) */}
-          {showWatermark && (
-            <div className="absolute bottom-4 right-4 z-10 pointer-events-none flex items-center gap-2 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10 opacity-75">
-              <Image
-                src="/scius-logo.png"
-                alt="SCiUS"
-                width={20}
-                height={20}
-                className="object-contain"
-              />
-              <span className="text-[10px] font-mono tracking-wider text-white/90">
-                SCiUS • {roomCode}
+        {/* Center Telemetry Strip */}
+        <div className="hidden lg:flex items-center gap-2 bg-zinc-900/90 border border-white/[0.07] rounded-lg px-3 py-1 text-xs">
+          {status === RoomStatus.LIVE ? (
+            <>
+              <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-400">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                LIVE
               </span>
-            </div>
-          )}
-
-          {/* Top Live Badges */}
-          {isSharing && (
-            <div className="absolute top-4 left-4 flex items-center gap-2">
-              <Badge variant="live" dot pulse>
-                LIVE CLASSROOM
-              </Badge>
-              <Badge variant="secondary" className="font-mono text-xs border-primary/30">
-                {resolution.toUpperCase()} • {frameRate}FPS
-              </Badge>
-              {micAudio && (
-                <Badge variant="success" className="text-[10px] gap-1">
-                  <Mic className="h-3 w-3" /> ไมค์เปิดอยู่
-                </Badge>
-              )}
-            </div>
+              <span className="text-zinc-600">•</span>
+              <span className="font-mono text-zinc-300 tabular-nums">
+                {formatElapsed(elapsedSeconds)}
+              </span>
+              <span className="text-zinc-700">|</span>
+              <span className="font-mono text-zinc-300 tabular-nums">
+                {metrics.width}×{metrics.height}
+              </span>
+              <span className="text-zinc-700">|</span>
+              <span className="font-mono text-zinc-300 tabular-nums">
+                {metrics.frameRate} FPS
+              </span>
+              <span className="text-zinc-700">|</span>
+              <span className="font-mono text-amber-400 tabular-nums">
+                {bitrateMbps} Mbps
+              </span>
+              <span className="text-zinc-700">|</span>
+              <span className="font-mono text-zinc-400 tabular-nums">
+                {metrics.rttMs} ms
+              </span>
+            </>
+          ) : (
+            <span className="text-zinc-400 flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" />
+              พร้อมแชร์หน้าจอ ({settings.resolution.toUpperCase()} @ {settings.frameRate}fps)
+            </span>
           )}
         </div>
 
-        {/* Minimalist Bottom Control Dock */}
-        <div className="mt-4 w-full max-w-xl">
-          <Card className="p-2 bg-card/95 border-border/80 backdrop-blur-xl shadow-xl flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5">
-              {isSharing ? (
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={handleStopShare}
-                  className="font-semibold text-xs gap-1.5"
-                >
-                  <StopCircle className="h-4 w-4" />
-                  หยุดแชร์หน้าจอ
-                </Button>
+        {/* Right Actions */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              setSidebarOpen(true);
+              setActiveTab("viewers");
+            }}
+            className="h-8 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/[0.08] flex items-center gap-1.5 text-xs text-zinc-300 transition-colors"
+          >
+            <Users className="w-3.5 h-3.5 text-amber-400" />
+            <span className="font-mono font-semibold tabular-nums">
+              {participants.length}
+            </span>
+            <span className="hidden sm:inline text-zinc-400">คนดู</span>
+          </button>
+
+          <button
+            onClick={() => setShowInviteModal(true)}
+            className="h-8 px-3 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center gap-1.5 text-xs font-medium transition-colors"
+          >
+            <QrCode className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">QR เข้าห้อง</span>
+          </button>
+
+          <button
+            onClick={() => setSidebarOpen((v) => !v)}
+            className={`h-8 px-2.5 rounded-lg border flex items-center gap-1.5 text-xs font-medium transition-colors ${
+              sidebarOpen
+                ? "bg-zinc-800 border-white/15 text-zinc-100"
+                : "bg-zinc-900 border-white/[0.08] text-zinc-400 hover:text-zinc-200"
+            }`}
+            title="ตั้งค่าสตรีมและห้องเรียน"
+          >
+            <Sliders className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">ตั้งค่า</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Main Workspace (Canvas + Inspector Sidebar) */}
+      <div className="flex-1 flex min-h-0 overflow-hidden">
+        {/* Center Broadcast Stage */}
+        <div className="flex-1 flex flex-col min-w-0 bg-studio-grid relative">
+          {errorMsg && (
+            <div className="mx-4 mt-3 px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between gap-3">
+              <span>{errorMsg}</span>
+              <button
+                onClick={() => setErrorMsg(null)}
+                className="text-amber-400 hover:text-amber-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Video Viewport */}
+          <div className="flex-1 p-4 flex items-center justify-center min-h-0">
+            <div className="relative w-full h-full rounded-2xl bg-black border border-white/[0.08] shadow-2xl overflow-hidden flex items-center justify-center">
+              {stream ? (
+                <>
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className={`w-full h-full object-contain transition-all duration-200 ${
+                      settings.isPaused ? "opacity-25 blur-md scale-[0.99]" : "opacity-100"
+                    }`}
+                  />
+
+                  {/* Freeze / Privacy Mode Overlay */}
+                  {settings.isPaused && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/70 backdrop-blur-sm z-10">
+                      <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 mb-3">
+                        <Pause className="w-6 h-6" />
+                      </div>
+                      <p className="text-sm font-semibold text-zinc-100">
+                        พักหน้าจอชั่วคราว (Freeze Mode)
+                      </p>
+                      <p className="text-xs text-zinc-400 mt-1">
+                        ผู้ชมจะเห็นหน้าจอรอจนกว่าคุณจะกดเล่นต่อ
+                      </p>
+                      <button
+                        onClick={handleTogglePause}
+                        className="mt-4 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs flex items-center gap-1.5 transition-colors"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-current" />
+                        แสดงหน้าจอต่อ
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Subtle Corner Watermark Preview */}
+                  {settings.watermark.enabled && (
+                    <div
+                      style={{ opacity: settings.watermark.opacity / 100 }}
+                      className={`absolute ${
+                        POSITION_CLASSES[settings.watermark.position]
+                      } pointer-events-none z-10 flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-zinc-950/65 backdrop-blur-md border border-white/10 shadow-lg transition-all`}
+                    >
+                      {settings.watermark.showLogo && (
+                        <img
+                          src="/scius-logo.png"
+                          alt="Watermark Logo"
+                          className="w-6 h-6 object-contain rounded-full"
+                        />
+                      )}
+                      {settings.watermark.text && (
+                        <span className="text-[11px] font-medium text-zinc-200 tracking-wide">
+                          {settings.watermark.text}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </>
               ) : (
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={handleStartShare}
-                  className="font-semibold text-xs gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90"
+                <div className="max-w-md text-center px-6 py-10">
+                  <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center mx-auto mb-5 text-amber-400 shadow-inner">
+                    <Monitor className="w-8 h-8" />
+                  </div>
+                  <h2 className="text-lg font-bold text-zinc-100 mb-2">
+                    พร้อมแชร์หน้าจอเข้าห้องเรียน
+                  </h2>
+                  <p className="text-xs text-zinc-400 leading-relaxed mb-6">
+                    เลือกหน้าต่างโปรแกรม สไลด์การสอน หรือทั้งหน้าจอเพื่อเริ่มสตรีมแบบ P2P
+                    ความหน่วงต่ำไปยัง iPad และอุปกรณ์ในห้องเรียน
+                  </p>
+                  <button
+                    onClick={handleStartBroadcast}
+                    className="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-sm inline-flex items-center gap-2 shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
+                  >
+                    <Monitor className="w-4 h-4" />
+                    เลือกหน้าจอที่จะแชร์
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Bottom Floating Control Dock */}
+          <div className=" pb-4 px-4 flex justify-center shrink-0">
+            <div className="inline-flex items-center gap-1.5 p-1.5 rounded-2xl bg-zinc-900/95 border border-white/[0.09] shadow-2xl backdrop-blur-xl">
+              {status === RoomStatus.LIVE ? (
+                <>
+                  <button
+                    onClick={handleTogglePause}
+                    className={`h-10 px-3.5 rounded-xl text-xs font-medium flex items-center gap-2 transition-colors ${
+                      settings.isPaused
+                        ? "bg-amber-500 text-zinc-950 font-semibold"
+                        : "bg-zinc-800/80 hover:bg-zinc-800 text-zinc-200"
+                    }`}
+                    title="พักหน้าจอชั่วคราว"
+                  >
+                    {settings.isPaused ? (
+                      <>
+                        <Play className="w-4 h-4 fill-current" />
+                        <span>แสดงจอต่อ</span>
+                      </>
+                    ) : (
+                      <>
+                        <Pause className="w-4 h-4" />
+                        <span>พักหน้าจอ</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={handleStartBroadcast}
+                    className="h-10 px-3.5 rounded-xl bg-zinc-800/80 hover:bg-zinc-800 text-zinc-200 text-xs font-medium flex items-center gap-2 transition-colors"
+                    title="สลับหน้าต่างที่แชร์"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">สลับหน้าจอ</span>
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleStartBroadcast}
+                  className="h-10 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs flex items-center gap-2 transition-colors"
                 >
-                  <MonitorPlay className="h-4 w-4" />
-                  เริ่มแชร์หน้าจอ
-                </Button>
+                  <Monitor className="w-4 h-4" />
+                  <span>เริ่มแชร์หน้าจอ</span>
+                </button>
               )}
 
-              {/* Mic Toggle */}
-              <Button
-                variant={micAudio ? "default" : "outline"}
-                size="sm"
-                onClick={toggleMic}
-                className={`text-xs h-9 px-2.5 ${micAudio ? "bg-emerald-600 text-white" : ""}`}
-                title={micAudio ? "ปิดไมค์ผู้สอน" : "เปิดไมค์ผู้สอน"}
-              >
-                {micAudio ? (
-                  <Mic className="h-4 w-4" />
-                ) : (
-                  <MicOff className="h-4 w-4 text-muted-foreground" />
-                )}
-              </Button>
+              <div className="h-5 w-px bg-white/[0.08] mx-1" />
 
               {/* System Audio Toggle */}
-              <Button
-                variant={systemAudio ? "outline" : "secondary"}
-                size="sm"
-                onClick={() => setSystemAudio(!systemAudio)}
-                className="text-xs h-9 px-2.5"
-                title={systemAudio ? "ปิดเสียงคอมพิวเตอร์" : "เปิดเสียงคอมพิวเตอร์"}
+              <button
+                onClick={handleToggleSystemAudio}
+                className={`h-10 px-3 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                  systemAudio
+                    ? "bg-zinc-800/90 text-emerald-400 border border-emerald-500/20"
+                    : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+                }`}
+                title="เสียงระบบคอมพิวเตอร์"
               >
                 {systemAudio ? (
-                  <Volume2 className="h-4 w-4 text-emerald-400" />
+                  <Volume2 className="w-4 h-4" />
                 ) : (
-                  <VolumeX className="h-4 w-4 text-muted-foreground" />
+                  <VolumeX className="w-4 h-4" />
                 )}
-              </Button>
+                <span className="hidden md:inline">เสียงระบบ</span>
+              </button>
 
-              {/* Settings Trigger */}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowSettingsModal(true)}
-                className="text-xs h-9 px-2.5 text-muted-foreground hover:text-foreground"
-                title="การตั้งค่าห้องและการสตรีม"
-              >
-                <Settings className="h-4 w-4" />
-              </Button>
-            </div>
-
-            <div className="flex items-center gap-2 text-xs text-muted-foreground pr-2 font-mono text-[11px]">
-              <span className={`h-2 w-2 rounded-full ${isSharing ? "bg-emerald-400 animate-pulse" : "bg-neutral-500"}`} />
-              <span className="truncate max-w-[140px]">{statusText}</span>
-            </div>
-          </Card>
-        </div>
-      </main>
-
-      {/* Comprehensive Host Settings Modal */}
-      {showSettingsModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <Card glow className="w-full max-w-lg p-6 bg-card border-primary/30 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-5 pb-3 border-b border-border/60">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-primary/10 text-primary">
-                  <Sliders className="h-5 w-5" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-lg text-foreground">
-                    การตั้งค่าโฮสต์ห้องเรียน (Host Settings)
-                  </h3>
-                  <p className="text-xs text-muted-foreground">
-                    ปรับแต่งความละเอียดเสียง และสิทธิ์การเข้าถึงห้องเรียน วมว.
-                  </p>
-                </div>
-              </div>
+              {/* Microphone Toggle */}
               <button
-                onClick={() => setShowSettingsModal(false)}
-                className="text-muted-foreground hover:text-foreground text-sm font-semibold p-1"
+                onClick={handleToggleMic}
+                className={`h-10 px-3 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                  micEnabled
+                    ? "bg-zinc-800/90 text-amber-400 border border-amber-500/25"
+                    : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+                }`}
+                title="ไมโครโฟนผู้สอน"
               >
-                ✕
+                {micEnabled ? (
+                  <Mic className="w-4 h-4" />
+                ) : (
+                  <MicOff className="w-4 h-4" />
+                )}
+                <span className="hidden md:inline">ไมค์</span>
+              </button>
+
+              {/* Watermark Quick Toggle */}
+              <button
+                onClick={() =>
+                  patchSettings({
+                    watermark: {
+                      ...settings.watermark,
+                      enabled: !settings.watermark.enabled
+                    }
+                  })
+                }
+                className={`h-10 px-3 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                  settings.watermark.enabled
+                    ? "bg-zinc-800/90 text-amber-300 border border-amber-500/20"
+                    : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+                }`}
+                title="เปิด/ปิดลายน้ำมุมจอ"
+              >
+                <Stamp className="w-4 h-4" />
+                <span className="hidden md:inline">ลายน้ำ</span>
+              </button>
+
+              {/* Lock Room Quick Toggle */}
+              <button
+                onClick={() => patchSettings({ isLocked: !settings.isLocked })}
+                className={`h-10 px-3 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                  settings.isLocked
+                    ? "bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                    : "bg-zinc-900 text-zinc-400 hover:text-zinc-200"
+                }`}
+                title="ล็อกห้องไม่ให้คนใหม่เข้าเพิ่ม"
+              >
+                {settings.isLocked ? (
+                  <Lock className="w-4 h-4" />
+                ) : (
+                  <Unlock className="w-4 h-4" />
+                )}
+                <span className="hidden lg:inline">
+                  {settings.isLocked ? "ล็อกอยู่" : "เปิดรับ"}
+                </span>
+              </button>
+
+              {status === RoomStatus.LIVE && (
+                <>
+                  <div className="h-5 w-px bg-white/[0.08] mx-1" />
+                  <button
+                    onClick={handleStopBroadcast}
+                    className="h-10 px-4 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                  >
+                    <StopCircle className="w-4 h-4" />
+                    <span>หยุดแชร์</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Right Collapsible Inspector Sidebar */}
+        {sidebarOpen && (
+          <aside className="w-80 sm:w-96 border-l border-white/[0.08] bg-zinc-950/95 flex flex-col shrink-0 z-10">
+            {/* Sidebar Tabs */}
+            <div className="p-2 border-b border-white/[0.08] grid grid-cols-2 gap-1 bg-zinc-900/50">
+              <button
+                onClick={() => setActiveTab("settings")}
+                className={`py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                  activeTab === "settings"
+                    ? "bg-zinc-800 text-zinc-100 shadow-sm"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <Sliders className="w-3.5 h-3.5 text-amber-400" />
+                <span>ตั้งค่าสตรีม</span>
+              </button>
+              <button
+                onClick={() => setActiveTab("viewers")}
+                className={`py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                  activeTab === "viewers"
+                    ? "bg-zinc-800 text-zinc-100 shadow-sm"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <Users className="w-3.5 h-3.5 text-amber-400" />
+                <span>ผู้เข้าชม ({participants.length})</span>
               </button>
             </div>
 
-            <div className="space-y-6">
-              {/* 1. Video & Quality Settings */}
-              <div>
-                <h4 className="text-xs font-semibold text-primary uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                  <Tv className="h-3.5 w-3.5" />
-                  1. คุณภาพและความละเอียดภาพหน้าจอ
-                </h4>
-                
-                {/* Resolution preset */}
-                <div className="mb-3">
-                  <label className="block text-xs font-medium text-foreground mb-1.5">
-                    ความละเอียด (Resolution)
-                  </label>
-                  <div className="grid grid-cols-4 gap-2">
-                    {(["720p", "1080p", "1440p", "4k"] as const).map((res) => (
-                      <button
-                        key={res}
-                        type="button"
-                        onClick={() => {
-                          setResolution(res);
-                          toast.info(`ตั้งค่าความละเอียด: ${res.toUpperCase()}`);
-                        }}
-                        className={`py-2 rounded-lg text-xs font-semibold border transition-all ${
-                          resolution === res
-                            ? "bg-primary text-primary-foreground border-primary"
-                            : "bg-secondary/60 text-muted-foreground border-border hover:text-foreground"
-                        }`}
+            {/* Sidebar Body */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-5">
+              {activeTab === "settings" ? (
+                <>
+                  {/* Video Quality & Resolution */}
+                  <section className="space-y-3">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200">
+                      <Tv className="w-3.5 h-3.5 text-amber-400" />
+                      <span>ความละเอียดและเฟรมเรต (ปรับสดได้ทันที)</span>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {(["720p", "1080p", "1440p", "4k"] as const).map((res) => (
+                        <button
+                          key={res}
+                          onClick={() => patchSettings({ resolution: res })}
+                          className={`py-2 rounded-lg text-xs font-mono font-semibold border transition-all ${
+                            settings.resolution === res
+                              ? "bg-amber-500/15 border-amber-500/50 text-amber-300"
+                              : "bg-zinc-900 border-white/[0.06] text-zinc-400 hover:text-zinc-200"
+                          }`}
+                        >
+                          {res.toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {[15, 24, 30, 60].map((fps) => (
+                        <button
+                          key={fps}
+                          onClick={() => patchSettings({ frameRate: fps })}
+                          className={`py-1.5 rounded-lg text-xs font-mono border transition-all ${
+                            settings.frameRate === fps
+                              ? "bg-amber-500/15 border-amber-500/50 text-amber-300 font-semibold"
+                              : "bg-zinc-900 border-white/[0.06] text-zinc-400 hover:text-zinc-200"
+                          }`}
+                        >
+                          {fps} FPS
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+
+                  <div className="h-px bg-white/[0.06]" />
+
+                  {/* Encoder Bitrate & Optimization Mode */}
+                  <section className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200">
+                        <Gauge className="w-3.5 h-3.5 text-amber-400" />
+                        <span>บิตเรตสูงสุด (Max Bitrate)</span>
+                      </div>
+                      <span className="text-xs font-mono text-amber-400">
+                        {(settings.maxBitrateKbps / 1000).toFixed(1)} Mbps
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {[
+                        { label: "1.5M", kbps: 1500 },
+                        { label: "3.5M", kbps: 3500 },
+                        { label: "6.0M", kbps: 6000 },
+                        { label: "12M", kbps: 12000 }
+                      ].map((b) => (
+                        <button
+                          key={b.kbps}
+                          onClick={() => patchSettings({ maxBitrateKbps: b.kbps })}
+                          className={`py-1.5 rounded-lg text-xs font-mono border transition-all ${
+                            settings.maxBitrateKbps === b.kbps
+                              ? "bg-amber-500/15 border-amber-500/50 text-amber-300 font-semibold"
+                              : "bg-zinc-900 border-white/[0.06] text-zinc-400 hover:text-zinc-200"
+                          }`}
+                        >
+                          {b.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="space-y-1.5 pt-1">
+                      <label className="text-[11px] text-zinc-400 block">
+                        โหมดปรับภาพตามเนื้อหา (Content Hint)
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          onClick={() =>
+                            patchSettings({
+                              contentHint: "detail",
+                              degradationPreference: "maintain-resolution"
+                            })
+                          }
+                          className={`p-2.5 rounded-xl border text-left transition-all ${
+                            settings.contentHint === "detail"
+                              ? "bg-amber-500/15 border-amber-500/40 text-zinc-100"
+                              : "bg-zinc-900 border-white/[0.06] text-zinc-400"
+                          }`}
+                        >
+                          <div className="text-xs font-semibold flex items-center gap-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                            <span>ตัวอักษรคมชัด</span>
+                          </div>
+                          <p className="text-[10px] text-zinc-400 mt-0.5">
+                            เหมาะกับสไลด์ โค้ด เอกสาร
+                          </p>
+                        </button>
+
+                        <button
+                          onClick={() =>
+                            patchSettings({
+                              contentHint: "motion",
+                              degradationPreference: "maintain-framerate"
+                            })
+                          }
+                          className={`p-2.5 rounded-xl border text-left transition-all ${
+                            settings.contentHint === "motion"
+                              ? "bg-amber-500/15 border-amber-500/40 text-zinc-100"
+                              : "bg-zinc-900 border-white/[0.06] text-zinc-400"
+                          }`}
+                        >
+                          <div className="text-xs font-semibold flex items-center gap-1.5">
+                            <Play className="w-3.5 h-3.5 text-amber-400" />
+                            <span>ภาพเคลื่อนไหวลื่น</span>
+                          </div>
+                          <p className="text-[10px] text-zinc-400 mt-0.5">
+                            เหมาะกับวิดีโอ แอนิเมชัน 3D
+                          </p>
+                        </button>
+                      </div>
+                    </div>
+                  </section>
+
+                  <div className="h-px bg-white/[0.06]" />
+
+                  {/* Audio & Microphone Device */}
+                  <section className="space-y-2.5">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200">
+                      <Mic className="w-3.5 h-3.5 text-amber-400" />
+                      <span>อุปกรณ์ไมโครโฟน</span>
+                    </div>
+
+                    {audioDevices.length > 0 ? (
+                      <select
+                        value={selectedMicId}
+                        onChange={(e) => handleChangeMicDevice(e.target.value)}
+                        className="w-full h-9 px-3 rounded-lg bg-zinc-900 border border-white/[0.08] text-xs text-zinc-200 focus:outline-none focus:border-amber-500/50"
                       >
-                        {res.toUpperCase()}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                        {audioDevices.map((d, idx) => (
+                          <option key={d.deviceId || idx} value={d.deviceId}>
+                            {d.label || `ไมโครโฟน #${idx + 1}`}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p className="text-[11px] text-zinc-500">
+                        ไม่พบไมโครโฟนแยก หรือยังไม่ได้อนุญาตสิทธิ์ไมค์
+                      </p>
+                    )}
+                  </section>
 
-                {/* Frame Rate preset */}
-                <div className="mb-3">
-                  <label className="block text-xs font-medium text-foreground mb-1.5">
-                    เฟรมเรท (Frame Rate)
-                  </label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {[
-                      { fps: 15, label: "15 FPS (สไลด์)" },
-                      { fps: 30, label: "30 FPS (มาตรฐาน)" },
-                      { fps: 60, label: "60 FPS (ลื่นไหล)" }
-                    ].map((item) => (
+                  <div className="h-px bg-white/[0.06]" />
+
+                  {/* Subtle Corner Watermark Configuration */}
+                  <section className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200">
+                        <Stamp className="w-3.5 h-3.5 text-amber-400" />
+                        <span>ลายน้ำมุมหน้าจอ (Watermark)</span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={settings.watermark.enabled}
+                        onChange={(e) =>
+                          patchSettings({
+                            watermark: {
+                              ...settings.watermark,
+                              enabled: e.target.checked
+                            }
+                          })
+                        }
+                        className="accent-amber-500 w-4 h-4 rounded cursor-pointer"
+                      />
+                    </div>
+
+                    {settings.watermark.enabled && (
+                      <div className="space-y-3 pl-1">
+                        <label className="flex items-center justify-between text-xs text-zinc-300 cursor-pointer">
+                          <span>แสดงโลโก้ในลายน้ำ</span>
+                          <input
+                            type="checkbox"
+                            checked={settings.watermark.showLogo}
+                            onChange={(e) =>
+                              patchSettings({
+                                watermark: {
+                                  ...settings.watermark,
+                                  showLogo: e.target.checked
+                                }
+                              })
+                            }
+                            className="accent-amber-500 w-3.5 h-3.5 rounded"
+                          />
+                        </label>
+
+                        <div className="space-y-1">
+                          <label className="text-[11px] text-zinc-400 block">
+                            ข้อความกำกับมุมจอ (เว้นว่างได้หากต้องการแค่โลโก้)
+                          </label>
+                          <input
+                            type="text"
+                            value={settings.watermark.text}
+                            onChange={(e) =>
+                              patchSettings({
+                                watermark: {
+                                  ...settings.watermark,
+                                  text: e.target.value
+                                }
+                              })
+                            }
+                            placeholder="เช่น ม.4/1 หรือรหัสห้อง"
+                            className="w-full h-8 px-2.5 rounded-lg bg-zinc-900 border border-white/[0.08] text-xs text-zinc-200 focus:outline-none focus:border-amber-500/50"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[11px] text-zinc-400 block">
+                            ตำแหน่งมุมจอ
+                          </label>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {(
+                              [
+                                { id: "bottom-right", label: "ขวาล่าง" },
+                                { id: "bottom-left", label: "ซ้ายล่าง" },
+                                { id: "top-right", label: "ขวาบน" },
+                                { id: "top-left", label: "ซ้ายบน" }
+                              ] as const
+                            ).map((pos) => (
+                              <button
+                                key={pos.id}
+                                onClick={() =>
+                                  patchSettings({
+                                    watermark: {
+                                      ...settings.watermark,
+                                      position: pos.id
+                                    }
+                                  })
+                                }
+                                className={`py-1.5 rounded-lg text-xs border transition-all ${
+                                  settings.watermark.position === pos.id
+                                    ? "bg-amber-500/15 border-amber-500/40 text-amber-300 font-medium"
+                                    : "bg-zinc-900 border-white/[0.06] text-zinc-400"
+                                }`}
+                              >
+                                {pos.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-[11px] text-zinc-400">
+                            <span>ความโปร่งแสง</span>
+                            <span className="font-mono">{settings.watermark.opacity}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={20}
+                            max={100}
+                            step={5}
+                            value={settings.watermark.opacity}
+                            onChange={(e) =>
+                              patchSettings({
+                                watermark: {
+                                  ...settings.watermark,
+                                  opacity: Number(e.target.value)
+                                }
+                              })
+                            }
+                            className="w-full accent-amber-500"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </section>
+
+                  <div className="h-px bg-white/[0.06]" />
+
+                  {/* Room Security & Access */}
+                  <section className="space-y-3">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200">
+                      <Shield className="w-3.5 h-3.5 text-amber-400" />
+                      <span>การเข้าถึงห้องเรียน</span>
+                    </div>
+
+                    <label className="flex items-center justify-between text-xs text-zinc-300 cursor-pointer">
+                      <span>ล็อกห้อง (ไม่อนุญาตคนเข้าเพิ่ม)</span>
+                      <input
+                        type="checkbox"
+                        checked={settings.isLocked}
+                        onChange={(e) => patchSettings({ isLocked: e.target.checked })}
+                        className="accent-amber-500 w-4 h-4 rounded"
+                      />
+                    </label>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] text-zinc-400 block">
+                        รหัส PIN ก่อนเข้าห้อง (เว้นว่าง = เข้าได้ทันที)
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={8}
+                        value={settings.pinCode}
+                        onChange={(e) => patchSettings({ pinCode: e.target.value.trim() })}
+                        placeholder="ไม่ได้ตั้งรหัส PIN"
+                        className="w-full h-8 px-2.5 rounded-lg bg-zinc-900 border border-white/[0.08] text-xs font-mono text-zinc-200 focus:outline-none focus:border-amber-500/50"
+                      />
+                    </div>
+                  </section>
+                </>
+              ) : (
+                /* Viewers & Quick Invite Tab */
+                <div className="space-y-4">
+                  <div className="p-3 rounded-xl bg-zinc-900/90 border border-white/[0.07] space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-zinc-400">สถานะสัญญาณ</span>
+                      <span className="font-mono text-emerald-400">
+                        {peerState === "connected"
+                          ? `เชื่อมต่อแล้ว (${metrics.connectedPeers} เครื่อง)`
+                          : status === RoomStatus.LIVE
+                          ? "กำลังรอผู้ชมเชื่อมต่อ..."
+                          : "ยังไม่ได้แชร์จอ"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        readOnly
+                        value={shareUrl}
+                        className="flex-1 h-8 px-2.5 rounded-lg bg-zinc-950 border border-white/[0.07] text-[11px] font-mono text-zinc-400"
+                      />
                       <button
-                        key={item.fps}
-                        type="button"
-                        onClick={() => setFrameRate(item.fps)}
-                        className={`py-2 rounded-lg text-xs font-semibold border transition-all ${
-                          frameRate === item.fps
-                            ? "bg-primary text-primary-foreground border-primary"
-                            : "bg-secondary/60 text-muted-foreground border-border hover:text-foreground"
-                        }`}
+                        onClick={copyShareLink}
+                        className="h-8 px-2.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-medium flex items-center gap-1"
                       >
-                        {item.label}
+                        {copiedLink ? (
+                          <Check className="w-3.5 h-3.5" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                        <span>คัดลอก</span>
                       </button>
-                    ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs font-semibold text-zinc-300">
+                      <span>รายชื่อผู้เข้าชมในห้อง ({participants.length})</span>
+                    </div>
+
+                    {participants.length === 0 ? (
+                      <div className="py-10 text-center rounded-xl border border-dashed border-white/[0.07] text-zinc-500 text-xs">
+                        ยังไม่มีผู้ชมเข้ามาในห้อง
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {participants.map((p) => (
+                          <div
+                            key={p.viewerId}
+                            className="p-2.5 rounded-xl bg-zinc-900/80 border border-white/[0.06] flex items-center justify-between gap-2"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-zinc-200 truncate">
+                                {p.displayName}
+                              </p>
+                              <p className="text-[10px] text-zinc-500 truncate">
+                                {p.deviceHint}
+                              </p>
+                            </div>
+                            <button
+                              onClick={() => handleKickViewer(p.viewerId)}
+                              className="p-1.5 rounded-lg hover:bg-rose-500/15 text-zinc-500 hover:text-rose-400 transition-colors"
+                              title="นำออกจากห้อง"
+                            >
+                              <UserX className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
-
-                {/* Content Hint */}
-                <div>
-                  <label className="block text-xs font-medium text-foreground mb-1.5">
-                    การเรนเดอร์เนื้อหา (Content Hint)
-                  </label>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <button
-                      type="button"
-                      onClick={() => setContentHint("detail")}
-                      className={`p-2.5 rounded-lg border text-left transition-all ${
-                        contentHint === "detail"
-                          ? "bg-primary/10 border-primary text-foreground font-semibold"
-                          : "bg-secondary/40 border-border text-muted-foreground"
-                      }`}
-                    >
-                      <div className="font-medium text-xs mb-0.5">Detail Mode (แนะนำ)</div>
-                      <div className="text-[11px] text-muted-foreground">เน้นตัวหนังสือ โค้ด และสูตรคำนวณคมชัด ไม่เบลอ</div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setContentHint("motion")}
-                      className={`p-2.5 rounded-lg border text-left transition-all ${
-                        contentHint === "motion"
-                          ? "bg-primary/10 border-primary text-foreground font-semibold"
-                          : "bg-secondary/40 border-border text-muted-foreground"
-                      }`}
-                    >
-                      <div className="font-medium text-xs mb-0.5">Motion Mode</div>
-                      <div className="text-[11px] text-muted-foreground">เน้นความต่อเนื่องเมื่อเปิดวิดีโอหรืออนิเมชัน</div>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* 2. Audio & Mic Settings */}
-              <div className="pt-4 border-t border-border/50">
-                <h4 className="text-xs font-semibold text-primary uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                  <Volume2 className="h-3.5 w-3.5" />
-                  2. ระบบเสียงและไมโครโฟน
-                </h4>
-                
-                <div className="space-y-2.5">
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-secondary/40 border border-border/60">
-                    <div>
-                      <div className="text-xs font-medium text-foreground">แชร์เสียงระบบคอมพิวเตอร์ (System Audio)</div>
-                      <div className="text-[11px] text-muted-foreground">ส่งเสียงจากโปรแกรมหรือวิดีโอที่เปิดบนคอมพิวเตอร์</div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={systemAudio}
-                      onChange={(e) => setSystemAudio(e.target.checked)}
-                      className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-secondary/40 border border-border/60">
-                    <div>
-                      <div className="text-xs font-medium text-foreground">ไมโครโฟนผู้สอน (Teacher Microphone)</div>
-                      <div className="text-[11px] text-muted-foreground">ส่งเสียงบรรยายของผู้สอนรวมเข้ากับสตรีม</div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={micAudio}
-                      onChange={(e) => {
-                        setMicAudio(e.target.checked);
-                        if (isSharing) toggleMic();
-                      }}
-                      className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-secondary/40 border border-border/60">
-                    <div>
-                      <div className="text-xs font-medium text-foreground">ระบบตัดเสียงสะท้อนและเสียงรบกวน (Noise Suppression)</div>
-                      <div className="text-[11px] text-muted-foreground">เพิ่มความคมชัดของเสียงพูด</div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={noiseSuppression}
-                      onChange={(e) => setNoiseSuppression(e.target.checked)}
-                      className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* 3. Security & Classroom Management */}
-              <div className="pt-4 border-t border-border/50">
-                <h4 className="text-xs font-semibold text-primary uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                  <Shield className="h-3.5 w-3.5" />
-                  3. ความปลอดภัยและจัดการห้องเรียน
-                </h4>
-
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-secondary/40 border border-border/60">
-                    <div>
-                      <div className="text-xs font-medium text-foreground">ล็อกห้องเรียน (Lock Room)</div>
-                      <div className="text-[11px] text-muted-foreground">ไม่อนุญาตให้นักเรียนคนใหม่เข้าร่วมหลังจากเริ่มสอน</div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsRoomLocked(!isRoomLocked);
-                        toast.info(isRoomLocked ? "ปลดล็อกห้องเรียนแล้ว" : "ล็อกห้องเรียนเรียบร้อย");
-                      }}
-                      className={`p-2 rounded-lg border text-xs font-semibold transition-all ${
-                        isRoomLocked
-                          ? "bg-rose-500/10 text-rose-400 border-rose-500/30"
-                          : "bg-secondary text-muted-foreground border-border"
-                      }`}
-                    >
-                      {isRoomLocked ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-secondary/40 border border-border/60">
-                    <div>
-                      <div className="text-xs font-medium text-foreground">แสดงลายน้ำ วมว. (SCiUS Watermark)</div>
-                      <div className="text-[11px] text-muted-foreground">แสดงตราสัญลักษณ์ วมว. และรหัสห้องที่มุมจอ</div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={showWatermark}
-                      onChange={(e) => setShowWatermark(e.target.checked)}
-                      className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
-                    />
-                  </div>
-                </div>
-              </div>
+              )}
             </div>
+          </aside>
+        )}
+      </div>
 
-            <div className="mt-6 pt-4 border-t border-border/60 flex items-center justify-end gap-2">
-              <Button
-                variant="default"
-                size="sm"
-                onClick={() => {
-                  setShowSettingsModal(false);
-                  toast.success("บันทึกการตั้งค่าโฮสต์แล้ว (มีผลทันที)");
-                }}
-                className="bg-primary text-primary-foreground font-semibold text-xs"
-              >
-                เสร็จสิ้น
-              </Button>
-            </div>
-          </Card>
-        </div>
-      )}
-
-      {/* Production Invite Modal */}
+      {/* Invite / QR Modal */}
       {showInviteModal && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <Card glow className="w-full max-w-md p-6 bg-card border-primary/30 shadow-2xl">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2.5">
-                <div className="h-8 w-8 rounded-full overflow-hidden border border-primary/40 p-0.5 bg-black/40 flex items-center justify-center">
-                  <Image
-                    src="/scius-logo.png"
-                    alt="SCiUS"
-                    width={28}
-                    height={28}
-                    className="object-contain"
-                  />
-                </div>
-                <h3 className="font-bold text-lg text-foreground">
-                  เชิญนักเรียนเข้าห้องเรียน วมว.
-                </h3>
+          <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-white/10 p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-zinc-100">สแกนเข้าดูหน้าจอ</h3>
+                <p className="text-xs text-zinc-400">{roomName}</p>
               </div>
               <button
                 onClick={() => setShowInviteModal(false)}
-                className="text-muted-foreground hover:text-foreground text-sm font-semibold p-1"
+                className="p-1.5 rounded-lg bg-zinc-800 text-zinc-400 hover:text-zinc-100"
               >
-                ✕
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            <p className="text-xs text-muted-foreground mb-4">
-              ส่งลิงก์หรือให้นักเรียนสแกน QR Code บนไอแพดหรืออุปกรณ์ที่ต้องการรับชม
-            </p>
-
-            <div className="flex justify-center p-4 bg-white rounded-2xl w-fit mx-auto shadow-sm mb-4">
-              <QRCodeSVG value={inviteUrl} size={180} level="M" />
+            <div className="bg-white p-5 rounded-2xl flex justify-center mx-auto w-fit shadow-inner">
+              {shareUrl && <QRCodeSVG value={shareUrl} size={200} />}
             </div>
 
-            <div className="flex items-center justify-center gap-2 mb-4 p-2 rounded-xl bg-secondary/80 border border-border/70">
-              <span className="text-xs text-muted-foreground">รหัสห้องเรียน:</span>
-              <span className="text-base font-bold font-mono tracking-wider text-primary">
-                {roomCode}
-              </span>
+            <div className="text-center space-y-1">
+              <p className="text-[11px] uppercase tracking-wider text-zinc-400">
+                รหัสเข้าห้องเรียน
+              </p>
+              <p className="text-3xl font-mono font-bold tracking-widest text-amber-400">
+                {formatRoomCode(roomCode)}
+              </p>
+              {settings.pinCode && (
+                <p className="text-xs text-zinc-300 pt-1">
+                  รหัส PIN: <span className="font-mono font-bold">{settings.pinCode}</span>
+                </p>
+              )}
             </div>
 
-            <div className="flex items-center gap-2 mb-4">
-              <Input
-                readOnly
-                value={inviteUrl}
-                className="text-xs font-mono select-all bg-background"
-              />
-              <Button
-                variant={copied ? "default" : "gradient"}
-                size="sm"
-                onClick={handleCopyLink}
-                className="shrink-0 font-semibold text-xs h-11"
-              >
-                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                {copied ? "คัดลอกแล้ว" : "คัดลอก"}
-              </Button>
-            </div>
-
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowInviteModal(false)}
-              className="w-full text-xs font-medium"
+            <button
+              onClick={copyShareLink}
+              className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs flex items-center justify-center gap-2 transition-colors"
             >
-              ปิดหน้าต่าง
-            </Button>
-          </Card>
+              {copiedLink ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+              <span>{copiedLink ? "คัดลอกลิงก์แล้ว" : "คัดลอกลิงก์เข้าห้อง"}</span>
+            </button>
+          </div>
         </div>
       )}
     </div>
