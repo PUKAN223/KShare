@@ -3,14 +3,17 @@ import "./globals.css";
 import { Toaster } from "sonner";
 
 export const metadata: Metadata = {
-  title: "KShare — Ultra-Fast P2P Screen Sharing",
+  title: "SCiUS Share — ระบบแชร์หน้าจอห้องเรียนวิทยาศาสตร์ วมว. (กระทรวง อว.)",
   description:
-    "แชร์หน้าจอความละเอียดสูงแบบ Peer-to-Peer รวดเร็ว เสถียร ปลอดภัย ไม่ต้องติดตั้งโปรแกรม สำหรับการสอนและการทำงานร่วมกัน",
-  keywords: ["screen share", "p2p", "webrtc", "kshare", "vdo ninja", "screen capture", "online teaching"]
+    "ระบบแชร์หน้าจอและถ่ายทอดสดแบบ Peer-to-Peer สำหรับโครงการสนับสนุนการจัดตั้งห้องเรียนวิทยาศาสตร์ในโรงเรียน โดยการกำกับดูแลของมหาวิทยาลัย (วมว.) กระทรวงการอุดมศึกษา วิทยาศาสตร์ วิจัยและนวัตกรรม",
+  icons: {
+    icon: "/scius-logo.png",
+    apple: "/scius-logo.png"
+  }
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0f1117",
+  themeColor: "#0b0f19",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1
@@ -24,6 +27,7 @@ export default function RootLayout({
   return (
     <html lang="th" className="dark" suppressHydrationWarning>
       <head>
+        <link rel="icon" href="/scius-logo.png" type="image/png" />
         <link
           rel="preload"
           href="https://cdn.jsdelivr.net/gh/lazywasabi/thai-web-fonts@main/fonts/LINESeedSansTH/LINESeedSansTH-Regular.woff2"

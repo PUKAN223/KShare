@@ -136,18 +136,18 @@ function DashboardContent() {
   return (
     <main className="container mx-auto max-w-7xl px-4 sm:px-6 py-8 flex-1">
       {/* Top Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-8 border-b border-border/40">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-8 border-b border-primary/20">
         <div>
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex items-center gap-2.5 mb-1">
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
-              แดชบอร์ดจัดการห้อง
+              ห้องเรียนวิทยาศาสตร์ วมว. ของฉัน
             </h1>
-            <Badge variant="secondary" className="text-xs font-mono">
-              {rooms.length} ห้อง
+            <Badge variant="outline" className="text-xs font-mono border-primary/30 text-primary">
+              {rooms.length} ห้องเรียน
             </Badge>
           </div>
           <p className="text-xs sm:text-sm text-muted-foreground">
-            สร้าง จัดการ และตรวจสอบสถานะห้องแชร์หน้าจอ P2P ของคุณ
+            จัดการและตรวจสอบสถานะการถ่ายทอดสดหน้าจอห้องเรียน วมว. (โครงการ อว.)
           </p>
         </div>
 
@@ -156,20 +156,20 @@ function DashboardContent() {
             variant="outline"
             size="sm"
             onClick={fetchRooms}
-            className="gap-1.5 text-xs"
+            className="gap-1.5 text-xs border-primary/30"
             title="รีเฟรชข้อมูล"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             รีเฟรช
           </Button>
           <Button
-            variant="gradient"
+            variant="default"
             size="sm"
             onClick={() => setShowCreateModal(true)}
-            className="gap-1.5 text-xs font-semibold"
+            className="gap-1.5 text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90"
           >
             <Plus className="h-4 w-4" />
-            สร้างห้องใหม่
+            เปิดห้องเรียนใหม่
           </Button>
         </div>
       </div>
@@ -177,14 +177,14 @@ function DashboardContent() {
       {/* Modal / Card to Create Room */}
       {showCreateModal && (
         <div className="my-6">
-          <Card glow className="p-6 bg-card/90 border-primary/30 max-w-xl mx-auto shadow-2xl">
+          <Card glow className="p-6 bg-card border-primary/30 max-w-xl mx-auto shadow-2xl">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <div className="p-2 rounded-lg bg-orange-500/15 text-orange-400">
+                <div className="p-2 rounded-lg bg-primary/10 text-primary">
                   <MonitorPlay className="h-5 w-5" />
                 </div>
                 <h3 className="font-bold text-lg text-foreground">
-                  สร้างห้องแชร์หน้าจอใหม่
+                  เปิดห้องเรียน วมว. ใหม่
                 </h3>
               </div>
               <button
@@ -198,10 +198,10 @@ function DashboardContent() {
             <form onSubmit={handleCreateRoom} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-foreground mb-1.5">
-                  ชื่อห้อง / วิชา / หัวข้อการประชุม *
+                  ชื่อห้องเรียน / วิชาที่สอน *
                 </label>
                 <Input
-                  placeholder="เช่น ติวการเขียนโปรแกรม Python คอร์ส 1"
+                  placeholder="เช่น ฟิสิกส์ ม.4 บทกลศาสตร์, สรุปสอบเคมี"
                   value={newRoomName}
                   onChange={(e) => setNewRoomName(e.target.value)}
                   required
@@ -211,7 +211,7 @@ function DashboardContent() {
 
               <div>
                 <label className="block text-xs font-medium text-foreground mb-1.5">
-                  กำหนดรหัสห้องเอง (ทางเลือก เช่น KSH-MATH)
+                  กำหนดรหัสห้องเรียนเอง (ทางเลือก เช่น SCIUS-PHY)
                 </label>
                 <Input
                   placeholder="ปล่อยว่างเพื่อสุ่มอัตโนมัติ"
@@ -236,12 +236,12 @@ function DashboardContent() {
                 </Button>
                 <Button
                   type="submit"
-                  variant="gradient"
+                  variant="default"
                   size="sm"
                   disabled={isSubmitting}
-                  className="font-semibold"
+                  className="font-semibold bg-primary text-primary-foreground hover:bg-primary/90"
                 >
-                  {isSubmitting ? "กำลังเปิดห้อง..." : "สร้างห้องและเริ่มแชร์"}
+                  {isSubmitting ? "กำลังเปิดห้องเรียน..." : "เปิดห้องเรียนและเริ่มแชร์"}
                 </Button>
               </div>
             </form>

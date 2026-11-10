@@ -1,7 +1,8 @@
 export interface CaptureConstraints {
   frameRate?: number;
-  resolution?: "720p" | "1080p" | "4k";
+  resolution?: "720p" | "1080p" | "1440p" | "4k";
   includeAudio?: boolean;
+  contentHint?: "detail" | "motion" | "text";
   suppressLocalAudioPlayback?: boolean;
 }
 
@@ -18,6 +19,7 @@ export type CaptureEndedCallback = () => void;
 
 export class ScreenCaptureManager {
   private activeStream: MediaStream | null = null;
+  private micStream: MediaStream | null = null;
   private onEndedCallback: CaptureEndedCallback | null = null;
 
   public isCapturing(): boolean {
@@ -36,7 +38,7 @@ export class ScreenCaptureManager {
   }
 
   /**
-   * Request screen capture stream from user's browser
+   * Request screen capture stream from user's browser with rich settings
    */
   public async startCapture(
     options: CaptureConstraints = {}
@@ -45,13 +47,13 @@ export class ScreenCaptureManager {
       throw new Error("Screen capture API (getDisplayMedia) is not supported in this environment");
     }
 
-    // Stop existing stream if running
     this.stopCapture();
 
     const {
       frameRate = 30,
       resolution = "1080p",
       includeAudio = true,
+      contentHint = "detail",
       suppressLocalAudioPlayback = false
     } = options;
 
@@ -61,6 +63,9 @@ export class ScreenCaptureManager {
     if (resolution === "720p") {
       width = 1280;
       height = 720;
+    } else if (resolution === "1440p") {
+      width = 2560;
+      height = 1440;
     } else if (resolution === "4k") {
       width = 3840;
       height = 2160;
@@ -92,6 +97,11 @@ export class ScreenCaptureManager {
         throw new Error("No video track found in captured screen stream");
       }
 
+      // Apply contentHint optimization (detail for slides/code, motion for video)
+      if ("contentHint" in videoTrack) {
+        videoTrack.contentHint = contentHint;
+      }
+
       // Handle user stopping share via browser native banner
       videoTrack.addEventListener("ended", () => {
         this.stopCapture();
@@ -105,7 +115,7 @@ export class ScreenCaptureManager {
         width: settings.width || width,
         height: settings.height || height,
         frameRate: settings.frameRate || frameRate,
-        label: videoTrack.label || "Screen Stream",
+        label: videoTrack.label || "SCiUS Screen Stream",
         hasAudio: stream.getAudioTracks().length > 0,
         displaySurface: settings.displaySurface
       };
@@ -123,9 +133,48 @@ export class ScreenCaptureManager {
   }
 
   /**
+   * Optionally capture teacher's microphone and merge it into the active stream
+   */
+  public async addMicrophoneTrack(): Promise<MediaStreamTrack | null> {
+    if (!navigator.mediaDevices?.getUserMedia || !this.activeStream) return null;
+    try {
+      this.micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+      const micTrack = this.micStream.getAudioTracks()[0];
+      if (micTrack) {
+        this.activeStream.addTrack(micTrack);
+        return micTrack;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  public removeMicrophoneTrack(): void {
+    if (this.micStream) {
+      this.micStream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+          this.activeStream?.removeTrack(track);
+        } catch {
+          // ignore
+        }
+      });
+      this.micStream = null;
+    }
+  }
+
+  /**
    * Cleanly stop all tracks and cleanup
    */
   public stopCapture(): void {
+    this.removeMicrophoneTrack();
     if (this.activeStream) {
       this.activeStream.getTracks().forEach((track) => {
         try {
