@@ -418,9 +418,6 @@ export function HostStudio({
           <div className="h-4 w-px bg-white/[0.08]" />
 
           <div className="flex items-center gap-2 min-w-0">
-            <span className="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[11px] font-medium shrink-0">
-              {subject}
-            </span>
             <h1 className="font-semibold text-sm text-zinc-100 truncate max-w-[180px] sm:max-w-[260px]">
               {roomName}
             </h1>
@@ -593,39 +590,30 @@ export function HostStudio({
                   )}
                 </>
               ) : (
-                <div className="max-w-2xl w-full px-6 py-8 flex flex-col md:flex-row items-center justify-center gap-8">
-                  <div className="text-center md:text-left space-y-4 max-w-sm">
-                    <div className="w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center mx-auto md:mx-0 text-amber-400">
-                      <Monitor className="w-7 h-7" />
+                <div className="max-w-xl w-full px-6 py-8 flex flex-col sm:flex-row items-center justify-center gap-8">
+                  <div className="text-center sm:text-left space-y-4">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center mx-auto sm:mx-0 text-amber-400">
+                      <Monitor className="w-6 h-6" />
                     </div>
-                    <div>
-                      <h2 className="text-xl font-bold text-zinc-100">
-                        พร้อมแชร์หน้าจอเข้าห้องเรียน
-                      </h2>
-                      <p className="text-xs text-zinc-400 leading-relaxed mt-1.5">
-                        กดปุ่มด้านล่างเพื่อเลือกหน้าต่างสไลด์หรือหน้าจอที่ต้องการแชร์ นักเรียนสามารถสแกน QR Code ด้านข้างเพื่อรอรับภาพได้ทันที
-                      </p>
-                    </div>
+                    <h2 className="text-lg font-bold text-zinc-100">
+                      พร้อมแชร์หน้าจอ
+                    </h2>
                     <button
                       onClick={handleStartBroadcast}
-                      className="px-6 py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-sm inline-flex items-center gap-2 shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
+                      className="px-5 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-sm inline-flex items-center gap-2 shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
                     >
                       <Monitor className="w-4 h-4" />
-                      เลือกหน้าจอที่จะแชร์เลย
+                      เลือกหน้าจอที่จะแชร์
                     </button>
                   </div>
 
-                  {/* Quick Join Card right on the waiting canvas */}
-                  <div className="p-5 rounded-2xl bg-zinc-900/90 border border-white/10 text-center space-y-3 shrink-0 shadow-xl">
-                    <div className="bg-white p-3.5 rounded-xl mx-auto w-fit">
-                      {shareUrl && <QRCodeSVG value={shareUrl} size={136} />}
+                  <div className="p-4 rounded-2xl bg-zinc-900/90 border border-white/10 text-center space-y-2.5 shrink-0">
+                    <div className="bg-white p-3 rounded-xl mx-auto w-fit">
+                      {shareUrl && <QRCodeSVG value={shareUrl} size={128} />}
                     </div>
-                    <div>
-                      <p className="text-[11px] text-zinc-400">รหัสเข้าห้องเรียน</p>
-                      <p className="text-xl font-mono font-bold tracking-widest text-amber-400">
-                        {formatRoomCode(roomCode)}
-                      </p>
-                    </div>
+                    <p className="text-lg font-mono font-bold tracking-widest text-amber-400">
+                      {formatRoomCode(roomCode)}
+                    </p>
                   </div>
                 </div>
               )}
@@ -1091,11 +1079,11 @@ export function HostStudio({
                   <section className="space-y-3">
                     <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200">
                       <Shield className="w-3.5 h-3.5 text-amber-400" />
-                      <span>การเข้าถึงห้องเรียน</span>
+                      <span>การเข้าห้อง</span>
                     </div>
 
                     <label className="flex items-center justify-between text-xs text-zinc-300 cursor-pointer">
-                      <span>ล็อกห้อง (ไม่อนุญาตคนเข้าเพิ่ม)</span>
+                      <span>ล็อกห้อง</span>
                       <input
                         type="checkbox"
                         checked={settings.isLocked}
@@ -1106,14 +1094,14 @@ export function HostStudio({
 
                     <div className="space-y-1">
                       <label className="text-[11px] text-zinc-400 block">
-                        รหัส PIN ก่อนเข้าห้อง (เว้นว่าง = เข้าได้ทันที)
+                        รหัส PIN
                       </label>
                       <input
                         type="text"
                         maxLength={8}
                         value={settings.pinCode}
                         onChange={(e) => patchSettings({ pinCode: e.target.value.trim() })}
-                        placeholder="ไม่ได้ตั้งรหัส PIN"
+                        placeholder="ไม่ตั้งรหัส"
                         className="w-full h-8 px-2.5 rounded-lg bg-zinc-900 border border-white/[0.08] text-xs font-mono text-zinc-200 focus:outline-none focus:border-amber-500/50"
                       />
                     </div>
@@ -1220,7 +1208,7 @@ export function HostStudio({
 
             <div className="text-center space-y-1">
               <p className="text-[11px] uppercase tracking-wider text-zinc-400">
-                รหัสเข้าห้องเรียน
+                รหัสเข้าห้อง
               </p>
               <p className="text-3xl font-mono font-bold tracking-widest text-amber-400">
                 {formatRoomCode(roomCode)}

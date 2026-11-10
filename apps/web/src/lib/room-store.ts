@@ -95,7 +95,7 @@ export const RoomStore = {
     const room: StoredRoom = {
       id: "room_" + Math.random().toString(36).substring(2, 10),
       code: normalizedCode,
-      name: params.name,
+      name: params.name?.trim() || `ห้อง ${normalizedCode}`,
       subject: params.subject || "ทั่วไป",
       ownerId: params.ownerId,
       status: RoomStatus.IDLE,
@@ -191,11 +191,11 @@ export const RoomStore = {
 
     const existing = room.participants[participant.viewerId];
     if (existing?.kicked) {
-      return { allowed: false, reason: "คุณถูกผู้สอนนำออกจากห้องนี้" };
+      return { allowed: false, reason: "คุณถูกนำออกจากห้องนี้" };
     }
 
     if (!existing && room.settings.isLocked) {
-      return { allowed: false, reason: "ห้องเรียนถูกล็อกโดยผู้สอนชั่วคราว" };
+      return { allowed: false, reason: "ห้องถูกล็อกชั่วคราว" };
     }
 
     const activeList = Object.values(room.participants).filter(
@@ -210,7 +210,7 @@ export const RoomStore = {
       displayName:
         participant.displayName?.trim() ||
         existing?.displayName ||
-        `ผู้เรียน #${Object.keys(room.participants).length + 1}`,
+        `คนดู #${Object.keys(room.participants).length + 1}`,
       deviceHint: participant.deviceHint || existing?.deviceHint || "Browser",
       joinedAt: existing?.joinedAt || Date.now(),
       lastSeenAt: Date.now(),

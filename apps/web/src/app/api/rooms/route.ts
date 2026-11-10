@@ -5,7 +5,6 @@ import { RoomStore, RoomHostSettings } from "@/lib/room-store";
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "ห้องเรียนแชร์หน้าจอ";
     const subject = typeof body.subject === "string" && body.subject.trim() ? body.subject.trim() : "ทั่วไป";
     const customCode = typeof body.customCode === "string" ? body.customCode.trim().toUpperCase() : "";
     const initialSettings = (body.settings || {}) as Partial<RoomHostSettings>;
@@ -18,6 +17,8 @@ export async function POST(req: NextRequest) {
         { status: 409 }
       );
     }
+
+    const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : `ห้อง ${roomCode}`;
 
     const room = RoomStore.create({
       code: roomCode,

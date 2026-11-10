@@ -233,7 +233,7 @@ export function ViewerPlayer({
       <div className="min-h-screen bg-[#09090b] text-zinc-100 flex items-center justify-center p-6">
         <div className="max-w-sm w-full p-6 rounded-2xl bg-zinc-900 border border-white/10 text-center space-y-4">
           <h2 className="text-base font-bold text-zinc-100">เซสชันสิ้นสุดลง</h2>
-          <p className="text-xs text-zinc-400">ผู้สอนได้นำคุณออกจากห้องเรียนนี้แล้ว</p>
+          <p className="text-xs text-zinc-400">คุณถูกนำออกจากห้องนี้แล้ว</p>
           <button
             onClick={() => router.push("/")}
             className="w-full py-2.5 rounded-xl bg-amber-500 text-zinc-950 font-semibold text-xs"
@@ -262,10 +262,6 @@ export function ViewerPlayer({
             <ArrowLeft className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">ออก</span>
           </button>
-
-          <span className="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[11px] font-medium shrink-0">
-            {subject}
-          </span>
 
           <h1 className="font-semibold text-sm text-zinc-100 truncate">
             {roomName}
@@ -423,7 +419,7 @@ export function ViewerPlayer({
             className="absolute top-4 left-4 z-20 px-3.5 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center gap-2 shadow-xl backdrop-blur-md transition-all"
           >
             <VolumeX className="w-4 h-4" />
-            <span>แตะเพื่อเปิดเสียงจากผู้สอน</span>
+            <span>แตะเพื่อเปิดเสียง</span>
           </button>
         )}
 
@@ -453,41 +449,33 @@ export function ViewerPlayer({
         {/* Host Paused / Freeze Screen State */}
         {hasVideoStream && settings.isPaused && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/90 backdrop-blur-md p-6 text-center z-10">
-            <div className="w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 mb-4">
-              <Pause className="w-7 h-7" />
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 mb-3">
+              <Pause className="w-6 h-6" />
             </div>
-            <h2 className="text-base font-bold text-zinc-100">
-              ผู้สอนพักการแสดงหน้าจอชั่วคราว
+            <h2 className="text-sm font-bold text-zinc-100">
+              พักการแสดงหน้าจอชั่วคราว
             </h2>
-            <p className="text-xs text-zinc-400 mt-1">
-              ภาพจะกลับมาแสดงอัตโนมัติเมื่อผู้สอนกดเล่นต่อ
-            </p>
           </div>
         )}
 
         {/* Waiting / Connecting State */}
         {!hasVideoStream && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-studio-grid p-6 text-center">
-            <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex items-center justify-center text-amber-400 mb-4">
-              <Radio className="w-7 h-7 animate-pulse" />
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex items-center justify-center text-amber-400 mb-3">
+              <Radio className="w-6 h-6 animate-pulse" />
             </div>
-            <h2 className="text-base font-bold text-zinc-100 mb-1">
+            <h2 className="text-sm font-bold text-zinc-100 mb-4">
               {status === RoomStatus.LIVE
                 ? "กำลังเชื่อมต่อสัญญาณภาพ..."
-                : "กำลังรอผู้สอนเริ่มแชร์หน้าจอ"}
+                : "รอเริ่มแชร์หน้าจอ"}
             </h2>
-            <p className="text-xs text-zinc-400 max-w-xs leading-relaxed mb-5">
-              {status === RoomStatus.LIVE
-                ? `สถานะ WebRTC: ${peerState} — ภาพจะปรากฏขึ้นโดยอัตโนมัติ`
-                : "เมื่อผู้สอนกดเริ่มแชร์หน้าจอ ภาพสไลด์จะแสดงขึ้นมาทันทีโดยไม่ต้องรีเฟรชหน้าเว็บ"}
-            </p>
             {status === RoomStatus.LIVE && (
               <button
                 onClick={handleReconnect}
                 className="px-4 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-xs font-medium text-zinc-200 inline-flex items-center gap-2 transition-colors"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${reconnecting ? "animate-spin" : ""}`} />
-                <span>ขอสัญญาณภาพใหม่</span>
+                <span>รีเฟรชสัญญาณ</span>
               </button>
             )}
           </div>

@@ -148,10 +148,10 @@ function RoomDispatcherContent() {
             </div>
             <div>
               <h2 className="text-sm font-bold text-zinc-100">
-                ห้องเรียนนี้ตั้งรหัส PIN
+                ห้องนี้มีรหัส PIN
               </h2>
               <p className="text-xs text-zinc-400 font-mono">
-                รหัสห้อง: {formatRoomCode(code)}
+                {formatRoomCode(code)}
               </p>
             </div>
           </div>
@@ -170,9 +170,6 @@ function RoomDispatcherContent() {
             className="space-y-3"
           >
             <div>
-              <label className="text-xs text-zinc-400 block mb-1.5">
-                กรอกรหัส PIN ที่ได้รับจากผู้สอน
-              </label>
               <div className="relative">
                 <KeyRound className="w-4 h-4 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
@@ -180,7 +177,7 @@ function RoomDispatcherContent() {
                   autoFocus
                   value={pinInput}
                   onChange={(e) => setPinInput(e.target.value)}
-                  placeholder="รหัส PIN"
+                  placeholder="กรอกรหัส PIN"
                   className="w-full h-10 pl-9 pr-3 rounded-xl bg-zinc-950 border border-white/10 text-sm font-mono tracking-widest text-zinc-100 focus:outline-none focus:border-amber-500"
                 />
               </div>
@@ -198,7 +195,7 @@ function RoomDispatcherContent() {
                 type="submit"
                 className="flex-1 h-10 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold"
               >
-                เข้าห้องเรียน
+                เข้าห้อง
               </button>
             </div>
           </form>
