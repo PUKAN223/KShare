@@ -9,6 +9,8 @@ import {
   WatermarkPosition,
   getDefaultRoomSettings
 } from "@/lib/room-types";
+import { useAppDispatch } from "@/lib/store";
+import { upsertRoom } from "@/lib/store/room-slice";
 import {
   Maximize2,
   Minimize2,
@@ -51,6 +53,7 @@ export function ViewerPlayer({
   initialSettings
 }: ViewerPlayerProps) {
   const router = useRouter();
+  const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<WebRTCViewerPeer | null>(null);
@@ -201,6 +204,16 @@ export function ViewerPlayer({
           if (data.room.settings) {
             setSettings(data.room.settings);
           }
+          dispatch(
+            upsertRoom({
+              code: data.room.code,
+              status: data.room.status,
+              name: data.room.name,
+              subject: data.room.subject,
+              settings: data.room.settings,
+              activeViewersCount: data.room.activeViewersCount
+            })
+          );
         }
       } catch {
         // ignore
@@ -209,7 +222,7 @@ export function ViewerPlayer({
 
     const interval = setInterval(pollRoom, 3000);
     return () => clearInterval(interval);
-  }, [roomCode, viewerId]);
+  }, [roomCode, viewerId, dispatch]);
 
   // Fullscreen change listener to sync isFullscreen state with ESC or browser events
   useEffect(() => {

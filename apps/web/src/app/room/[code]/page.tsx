@@ -7,6 +7,8 @@ import { HostStudio } from "@/components/host-studio";
 import { ViewerPlayer } from "@/components/viewer-player";
 import { RoomHostSettings } from "@/lib/room-types";
 import { AlertCircle, ArrowLeft, Lock, KeyRound } from "lucide-react";
+import { useAppDispatch, useAppSelector } from "@/lib/store";
+import { selectRoomByCode, upsertRoom, setRoomDetail } from "@/lib/store/room-slice";
 
 interface RoomData {
   code: string;
@@ -46,6 +48,9 @@ function RoomDispatcherContent() {
   const code = (params.code || "").toUpperCase();
   const queryToken = searchParams.get("token");
 
+  const dispatch = useAppDispatch();
+  const cachedRoom = useAppSelector((state) => selectRoomByCode(state, code));
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [requiresPin, setRequiresPin] = useState(false);
@@ -53,7 +58,17 @@ function RoomDispatcherContent() {
   const [role, setRole] = useState<UserRole | null>(null);
   const [hostToken, setHostToken] = useState<string>("");
   const [viewerId, setViewerId] = useState<string>("v_default");
-  const [roomData, setRoomData] = useState<RoomData | null>(null);
+  const [roomData, setRoomData] = useState<RoomData | null>(
+    cachedRoom
+      ? {
+          code: cachedRoom.code,
+          name: cachedRoom.name,
+          subject: cachedRoom.subject,
+          status: cachedRoom.status,
+          settings: cachedRoom.settings
+        }
+      : null
+  );
 
   const verifyAndJoin = useCallback(
     async (suppliedPin?: string) => {
@@ -109,6 +124,30 @@ function RoomDispatcherContent() {
         setRole(data.role);
         setRoomData(data.room);
 
+        // Update Redux cache with verified room data
+        if (data.room) {
+          dispatch(
+            upsertRoom({
+              id: data.room.id,
+              code: data.room.code,
+              name: data.room.name,
+              subject: data.room.subject,
+              status: data.room.status,
+              settings: data.room.settings
+            })
+          );
+          dispatch(
+            setRoomDetail({
+              id: data.room.id,
+              code: data.room.code,
+              name: data.room.name,
+              subject: data.room.subject,
+              status: data.room.status,
+              settings: data.room.settings
+            })
+          );
+        }
+
         if (data.role === UserRole.HOST && effectiveToken) {
           setHostToken(effectiveToken);
           sessionStorage.setItem(`kshare_host_${code}`, effectiveToken);
@@ -134,7 +173,9 @@ function RoomDispatcherContent() {
         <div className="text-center space-y-3">
           <div className="w-10 h-10 rounded-full border-2 border-amber-500 border-t-transparent animate-spin mx-auto" />
           <p className="text-xs text-zinc-400">
-            กำลังเชื่อมต่อห้อง {formatRoomCode(code)}...
+            {cachedRoom?.name
+              ? `กำลังเชื่อมต่อ ${cachedRoom.name} (${formatRoomCode(code)})...`
+              : `กำลังเชื่อมต่อห้อง ${formatRoomCode(code)}...`}
           </p>
         </div>
       </div>

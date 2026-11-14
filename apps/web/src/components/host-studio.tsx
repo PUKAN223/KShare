@@ -12,6 +12,8 @@ import {
   WatermarkPosition,
   getDefaultRoomSettings
 } from "@/lib/room-types";
+import { useAppDispatch } from "@/lib/store";
+import { upsertRoom } from "@/lib/store/room-slice";
 import {
   Monitor,
   Mic,
@@ -63,6 +65,7 @@ export function HostStudio({
   initialSettings
 }: HostStudioProps) {
   const router = useRouter();
+  const dispatch = useAppDispatch();
   const videoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<WebRTCHostPeer | null>(null);
 
@@ -214,10 +217,12 @@ export function HostStudio({
           })
         }).catch(() => {});
 
+        dispatch(upsertRoom({ code: roomCode, settings: next }));
+
         return next;
       });
     },
-    [roomCode, hostToken]
+    [roomCode, hostToken, dispatch]
   );
 
   // Attach local preview stream to video element
@@ -269,6 +274,7 @@ export function HostStudio({
         ctx.restore();
 
         const thumbnailDataUrl = canvas.toDataURL("image/jpeg", 0.55);
+        dispatch(upsertRoom({ code: roomCode, thumbnailDataUrl }));
         await fetch(`/api/rooms/${roomCode}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -345,6 +351,8 @@ export function HostStudio({
         await patchSettings({ isPaused: false });
       }
 
+      dispatch(upsertRoom({ code: roomCode, status: RoomStatus.LIVE }));
+
       await fetch(`/api/rooms/${roomCode}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -384,6 +392,7 @@ export function HostStudio({
     setStream(null);
     setStatus(RoomStatus.IDLE);
     setPeerState("waiting");
+    dispatch(upsertRoom({ code: roomCode, status: RoomStatus.IDLE, thumbnailDataUrl: undefined }));
 
     await fetch(`/api/rooms/${roomCode}`, {
       method: "PATCH",

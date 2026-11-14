@@ -24,20 +24,16 @@ import {
 import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
 import { formatRoomCode, RoomStatus } from "@kshare/protocol";
-
-interface RoomListItem {
-  id: string;
-  code: string;
-  name: string;
-  status: RoomStatus;
-  isLocked: boolean;
-  hasPin: boolean;
-  resolution: string;
-  frameRate: number;
-  activeViewersCount: number;
-  thumbnailDataUrl?: string;
-  createdAt: number;
-}
+import { useAppDispatch, useAppSelector } from "@/lib/store";
+import {
+  selectRooms,
+  selectRoomsLoading,
+  selectRoomsInitialized,
+  fetchRoomsThunk,
+  upsertRoom,
+  removeRoom,
+  RoomListItem
+} from "@/lib/store/room-slice";
 
 export default function HomePage() {
   const router = useRouter();
@@ -57,28 +53,21 @@ export default function HomePage() {
   const [pinCode, setPinCode] = useState("");
   const [isCreating, setIsCreating] = useState(false);
 
+  const dispatch = useAppDispatch();
+  const rooms = useAppSelector(selectRooms);
+  const loadingRooms = useAppSelector(selectRoomsLoading);
+  const isInitialized = useAppSelector(selectRoomsInitialized);
+
   // Active Rooms & LAN State
-  const [rooms, setRooms] = useState<RoomListItem[]>([]);
-  const [loadingRooms, setLoadingRooms] = useState(true);
   const [lanIp, setLanIp] = useState("");
   const [copiedLan, setCopiedLan] = useState(false);
   const [showLanQr, setShowLanQr] = useState(false);
   const [copiedRoomCode, setCopiedRoomCode] = useState<string | null>(null);
   const [ownedRooms, setOwnedRooms] = useState<Record<string, string>>({});
 
-  const fetchRooms = useCallback(async () => {
-    try {
-      const res = await fetch("/api/rooms");
-      if (res.ok) {
-        const data = await res.json();
-        setRooms(data.rooms || []);
-      }
-    } catch {
-      // ignore
-    } finally {
-      setLoadingRooms(false);
-    }
-  }, []);
+  const fetchRooms = useCallback(() => {
+    dispatch(fetchRoomsThunk());
+  }, [dispatch]);
 
   useEffect(() => {
     fetchRooms();
@@ -158,6 +147,22 @@ export default function HomePage() {
         sessionStorage.setItem(`kshare_host_${data.room.code}`, data.hostToken);
       }
 
+      // Optimistically cache room in Redux before navigating
+      dispatch(
+        upsertRoom({
+          id: data.room.id,
+          code: data.room.code,
+          name: data.room.name,
+          subject: data.room.subject,
+          status: data.room.status || RoomStatus.IDLE,
+          settings: data.room.settings,
+          resolution,
+          frameRate,
+          activeViewersCount: 0,
+          createdAt: data.room.createdAt || Date.now()
+        })
+      );
+
       setShowCreateModal(false);
       router.push(`/room/${data.room.code}?token=${data.hostToken}`);
     } catch (err: unknown) {
@@ -187,6 +192,7 @@ export default function HomePage() {
         method: "DELETE"
       });
       if (res.ok) {
+        dispatch(removeRoom(code));
         localStorage.removeItem(`kshare_host_${code}`);
         toast.info(`ปิดห้อง ${code} แล้ว`);
         fetchRooms();
@@ -298,10 +304,17 @@ export default function HomePage() {
 
         {/* Screen / Room List */}
         {filteredRooms.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-white/10 bg-zinc-900/30 py-20 px-6 text-center space-y-3">
-            <Tv className="h-8 w-8 text-zinc-600 mx-auto" />
-            <p className="text-sm text-zinc-400">ยังไม่มีห้องที่เปิดอยู่</p>
-          </div>
+          loadingRooms && !isInitialized ? (
+            <div className="rounded-2xl border border-dashed border-white/10 bg-zinc-900/30 py-20 px-6 text-center space-y-3">
+              <div className="w-8 h-8 rounded-full border-2 border-amber-500 border-t-transparent animate-spin mx-auto" />
+              <p className="text-sm text-zinc-400">กำลังโหลดรายการห้อง...</p>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-white/10 bg-zinc-900/30 py-20 px-6 text-center space-y-3">
+              <Tv className="h-8 w-8 text-zinc-600 mx-auto" />
+              <p className="text-sm text-zinc-400">ยังไม่มีห้องที่เปิดอยู่</p>
+            </div>
+          )
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredRooms.map((room) => {

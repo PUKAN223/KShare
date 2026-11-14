@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { Toaster } from "sonner";
 import { PwaRegister } from "@/components/pwa-register";
+import { StoreProvider } from "@/components/store-provider";
 
 export const metadata: Metadata = {
   title: "KShare",
@@ -65,9 +66,11 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-screen bg-background font-sans antialiased selection:bg-primary/30 selection:text-white">
-        <PwaRegister />
-        {children}
-        <Toaster position="top-right" richColors theme="dark" />
+        <StoreProvider>
+          <PwaRegister />
+          {children}
+          <Toaster position="top-right" richColors theme="dark" />
+        </StoreProvider>
       </body>
     </html>
   );
